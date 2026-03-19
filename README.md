@@ -18,6 +18,7 @@ Server:
 
 ```powershell
 cd server
+py -3 -m pip install -r requirements.txt
 py -3 -m flask --app server.py run
 ```
 

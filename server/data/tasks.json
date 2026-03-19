@@ -1,26 +1,26 @@
 {
   "tasks": [
     {
-      "id": "d8044640-a51c-4381-99db-31383ba1bf5b",
       "title": "do laundry",
       "notes": "white/colored/shorts",
       "completed": true,
       "category": "General",
       "priority": "low",
       "due_date": "2026-03-21",
-      "created_at": "2026-03-19T12:37:09.070906+00:00",
-      "updated_at": "2026-03-19T12:37:51.433712+00:00"
+      "id": "d8044640-a51c-4381-99db-31383ba1bf5b",
+      "created_at": "2026-03-19T12:37:09.070906Z",
+      "updated_at": "2026-03-19T12:37:51.433712Z"
     },
     {
-      "id": "c3be0dc8-1a87-461a-a71f-9d3d4b2dddbb",
-      "title": "finish my research",
+      "title": "hiking",
       "notes": "",
       "completed": false,
-      "category": "Introduction",
-      "priority": "medium",
-      "due_date": "2026-03-20",
-      "created_at": "2026-03-19T12:38:45.211640+00:00",
-      "updated_at": "2026-03-19T12:38:45.211708+00:00"
+      "category": "General",
+      "priority": "high",
+      "due_date": "2026-03-22",
+      "id": "2af738bf-990b-4807-835d-26107e44312e",
+      "created_at": "2026-03-19T14:45:50.570277Z",
+      "updated_at": "2026-03-19T14:45:50.570277Z"
     }
   ]
 }

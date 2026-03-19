@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Mini Todo",
-  description: "A small modern todo list app powered by Next.js and Flask.",
+  title: "Task Board",
+  description: "A cleaner Flask and Next.js task board with validated models and a GitHub-inspired UI.",
 };
 
 export default function RootLayout({
