@@ -1,0 +1,388 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f4f7fb;
+  --panel: rgba(255, 255, 255, 0.82);
+  --panel-strong: #ffffff;
+  --text: #142033;
+  --muted: #66758d;
+  --line: rgba(20, 32, 51, 0.1);
+  --accent: #ff6b57;
+  --accent-2: #22b8a6;
+  --danger: #dc4c64;
+  --shadow: 0 24px 80px rgba(40, 62, 98, 0.14);
+}
+
+:root[data-theme="dark"] {
+  --bg: #0e1625;
+  --panel: rgba(19, 28, 45, 0.86);
+  --panel-strong: #121b2d;
+  --text: #edf2ff;
+  --muted: #95a3bf;
+  --line: rgba(149, 163, 191, 0.16);
+  --accent: #ff8a66;
+  --accent-2: #46d6c3;
+  --danger: #ff6b7d;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background:
+    radial-gradient(circle at top left, rgba(255, 107, 87, 0.18), transparent 26%),
+    radial-gradient(circle at 80% 10%, rgba(34, 184, 166, 0.18), transparent 22%),
+    linear-gradient(180deg, #eef4fb 0%, var(--bg) 100%);
+}
+
+:root[data-theme="dark"] html {
+  background:
+    radial-gradient(circle at top left, rgba(255, 138, 102, 0.15), transparent 26%),
+    radial-gradient(circle at 80% 10%, rgba(70, 214, 195, 0.12), transparent 22%),
+    linear-gradient(180deg, #09101c 0%, var(--bg) 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Segoe UI", "Aptos", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+}
+
+:root[data-theme="dark"] button,
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: rgba(17, 26, 43, 0.92);
+}
+
+button {
+  cursor: pointer;
+  padding: 0.85rem 1rem;
+  transition: 140ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 0.9rem 1rem;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.page-shell {
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.hero-card,
+.sidebar-card,
+.list-card,
+.details-card,
+.create-card,
+.filter-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow);
+}
+
+.hero-card {
+  padding: 1.6rem;
+  border-radius: 32px;
+  margin-bottom: 1.2rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.eyebrow {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.hero-card h1 {
+  margin: 0;
+  font-size: clamp(2.3rem, 4vw, 4rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+.hero-copy {
+  margin: 0.8rem 0 0;
+  max-width: 640px;
+  color: var(--muted);
+  font-size: 1.02rem;
+}
+
+.hero-actions,
+.section-title,
+.compact-grid,
+.detail-actions,
+.chip-row,
+.meta-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.hero-actions,
+.chip-row,
+.meta-row {
+  flex-wrap: wrap;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 340px;
+  gap: 1.2rem;
+}
+
+.sidebar-card,
+.list-card,
+.details-card {
+  border-radius: 30px;
+  padding: 1.1rem;
+}
+
+.sidebar-card {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+
+.stat-tile {
+  padding: 1rem;
+  border-radius: 24px;
+  color: white;
+}
+
+.stat-tile span {
+  display: block;
+  font-size: 1.9rem;
+  font-weight: 700;
+}
+
+.stat-tile p {
+  margin: 0.2rem 0 0;
+}
+
+.coral {
+  background: linear-gradient(135deg, #ff6b57, #ff9f68);
+}
+
+.teal {
+  background: linear-gradient(135deg, #159b8d, #46d6c3);
+}
+
+.gold {
+  background: linear-gradient(135deg, #d9911a, #ffc94a);
+}
+
+.create-card,
+.filter-card {
+  border-radius: 26px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.85rem;
+  box-shadow: none;
+}
+
+.section-title {
+  justify-content: space-between;
+}
+
+.section-title h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.section-title span,
+.empty-copy,
+.task-copy p {
+  color: var(--muted);
+}
+
+.compact-grid {
+  align-items: stretch;
+}
+
+.compact-grid > * {
+  flex: 1;
+}
+
+.chip-row button.active,
+.ghost-button:hover,
+.detail-actions button:first-child:hover {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), #ff9c70);
+  color: white;
+}
+
+.ghost-button,
+.text-button {
+  background: transparent;
+}
+
+.text-button {
+  padding: 0;
+  border: none;
+  color: var(--muted);
+}
+
+.list-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.task-list {
+  display: grid;
+  gap: 0.8rem;
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.task-row-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.48);
+  cursor: pointer;
+}
+
+:root[data-theme="dark"] .task-row-card {
+  background: rgba(10, 18, 30, 0.62);
+}
+
+.task-row-card.selected {
+  border-color: rgba(255, 107, 87, 0.45);
+  transform: translateY(-1px);
+}
+
+.checkbox-wrap {
+  padding-top: 0.2rem;
+}
+
+.checkbox-wrap input {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.task-copy h3 {
+  margin: 0 0 0.35rem;
+}
+
+.task-copy p {
+  margin: 0 0 0.7rem;
+}
+
+.priority-badge {
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.priority-badge.low {
+  background: rgba(70, 214, 195, 0.18);
+}
+
+.priority-badge.medium {
+  background: rgba(255, 201, 74, 0.2);
+}
+
+.priority-badge.high {
+  background: rgba(255, 107, 87, 0.2);
+}
+
+.details-card {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.details-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.detail-actions {
+  justify-content: space-between;
+}
+
+.danger-button:hover {
+  background: var(--danger);
+  border-color: transparent;
+  color: white;
+}
+
+.message {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+}
+
+.message.error {
+  background: rgba(220, 76, 100, 0.12);
+  color: var(--danger);
+}
+
+@media (max-width: 1100px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-card {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .page-shell {
+    padding: 1rem;
+  }
+
+  .stat-grid,
+  .compact-grid {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+}
