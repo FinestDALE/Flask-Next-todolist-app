@@ -1,26 +1,16 @@
 {
   "tasks": [
     {
-      "title": "do laundry",
-      "notes": "white/colored/shorts",
+      "title": "sleep",
+      "notes": "",
       "completed": true,
       "category": "General",
-      "priority": "low",
-      "due_date": "2026-03-21",
-      "id": "d8044640-a51c-4381-99db-31383ba1bf5b",
-      "created_at": "2026-03-19T12:37:09.070906Z",
-      "updated_at": "2026-03-19T12:37:51.433712Z"
-    },
-    {
-      "title": "hiking",
-      "notes": "",
-      "completed": false,
-      "category": "General",
-      "priority": "high",
-      "due_date": "2026-03-22",
-      "id": "2af738bf-990b-4807-835d-26107e44312e",
-      "created_at": "2026-03-19T14:45:50.570277Z",
-      "updated_at": "2026-03-19T14:45:50.570277Z"
+      "priority": "medium",
+      "due_date": "2026-03-20",
+      "due_time": null,
+      "id": "9b9b22e9-d569-47f0-be37-96e1d9e1c266",
+      "created_at": "2026-03-20T11:32:45.892200Z",
+      "updated_at": "2026-03-20T11:46:53.389331Z"
     }
   ]
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Task = {
   id: string;
@@ -10,6 +10,7 @@ type Task = {
   category: string;
   priority: "low" | "medium" | "high";
   due_date: string | null;
+  due_time: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -29,7 +30,7 @@ type ApiPayload = ApiState & {
   task?: Task;
 };
 
-type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "due_date" | "completed">;
+type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "due_date" | "due_time" | "completed">;
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:5000/api";
 
@@ -45,8 +46,11 @@ const emptyDraft: TaskDraft = {
   category: "General",
   priority: "medium",
   due_date: null,
+  due_time: null,
   completed: false,
 };
+
+const NOTIFIED_TASKS_KEY = "mini-todo-deadline-notified";
 
 function createDraft(task: Task | null): TaskDraft {
   if (!task) {
@@ -59,42 +63,118 @@ function createDraft(task: Task | null): TaskDraft {
     category: task.category,
     priority: task.priority,
     due_date: task.due_date,
+    due_time: task.due_time,
     completed: task.completed,
   };
 }
 
-function dueLabel(value: string | null) {
+function formatTime(value: string | null) {
   if (!value) {
-    return "No due date";
+    return "";
   }
 
-  const due = new Date(`${value}T00:00:00`);
-  return due.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
+  const [hours, minutes] = value.split(":");
+  const due = new Date();
+  due.setHours(Number(hours), Number(minutes), 0, 0);
+  return due.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
-function relativeDueTone(value: string | null, completed: boolean) {
-  if (!value || completed) {
+function dueLabel(dateValue: string | null, timeValue: string | null) {
+  if (!dateValue && !timeValue) {
+    return "No due date";
+  }
+
+  if (dateValue && !timeValue) {
+    const dueDate = new Date(`${dateValue}T00:00:00`);
+    return dueDate.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
+
+  if (!dateValue && timeValue) {
+    return formatTime(timeValue);
+  }
+
+  const dueDate = new Date(`${dateValue}T00:00:00`);
+  return `${dueDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })} at ${formatTime(timeValue)}`;
+}
+
+function relativeDueTone(dateValue: string | null, timeValue: string | null, completed: boolean) {
+  if (completed || !dateValue) {
     return "muted";
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const due = new Date(`${dateValue}T00:00:00`);
 
-  const due = new Date(`${value}T00:00:00`);
-  const delta = due.getTime() - today.getTime();
-  const days = Math.round(delta / 86400000);
+  if (timeValue) {
+    const [hours, minutes] = timeValue.split(":");
+    due.setHours(Number(hours), Number(minutes), 0, 0);
+  } else {
+    due.setHours(23, 59, 59, 999);
+  }
 
-  if (days < 0) {
+  if (due.getTime() < now.getTime()) {
     return "late";
   }
-  if (days === 0) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (due >= today && due < tomorrow) {
     return "today";
   }
   return "upcoming";
+}
+
+function getDueAt(task: Task) {
+  if (!task.due_date && !task.due_time) {
+    return null;
+  }
+
+  const baseDate = task.due_date ? new Date(`${task.due_date}T00:00:00`) : new Date();
+
+  if (task.due_time) {
+    const [hours, minutes] = task.due_time.split(":");
+    baseDate.setHours(Number(hours), Number(minutes), 0, 0);
+  } else {
+    baseDate.setHours(23, 59, 59, 999);
+  }
+
+  return baseDate;
+}
+
+function toLocalDateKey(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function deadlineNotificationKey(task: Task) {
+  return `${task.id}:${task.due_date ?? ""}:${task.due_time ?? ""}`;
+}
+
+function isDueToday(task: Task, now: Date) {
+  if (task.completed) {
+    return false;
+  }
+
+  const dueAt = getDueAt(task);
+  if (!dueAt) {
+    return false;
+  }
+
+  return toLocalDateKey(dueAt) === toLocalDateKey(now) && dueAt.getTime() >= now.getTime();
 }
 
 export default function Home() {
@@ -102,17 +182,24 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState<"all" | "open" | "done">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "done" | "due_today">("all");
   const [category, setCategory] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
+  const [deadlineMessage, setDeadlineMessage] = useState("");
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    "unsupported"
+  );
+  const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
   const [createForm, setCreateForm] = useState({
     title: "",
     category: "General",
     priority: "medium" as Task["priority"],
     due_date: "",
+    due_time: "",
   });
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -145,11 +232,6 @@ export default function Home() {
   }
 
   useEffect(() => {
-    const storedTheme = localStorage.getItem("mini-todo-theme");
-    if (storedTheme === "dark" || storedTheme === "light") {
-      setTheme(storedTheme);
-      document.documentElement.dataset.theme = storedTheme;
-    }
     void (async () => {
       setLoading(true);
       setError("");
@@ -170,18 +252,110 @@ export default function Home() {
     localStorage.setItem("mini-todo-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    const storedTheme = localStorage.getItem("mini-todo-theme");
+    if (storedTheme === "dark" || storedTheme === "light") {
+      setTheme(storedTheme);
+      document.documentElement.dataset.theme = storedTheme;
+    }
+
+    if (typeof window !== "undefined") {
+      const storedNotifiedTasks = localStorage.getItem(NOTIFIED_TASKS_KEY);
+      if (storedNotifiedTasks) {
+        try {
+          notifiedTaskKeysRef.current = new Set(JSON.parse(storedNotifiedTasks) as string[]);
+        } catch {
+          notifiedTaskKeysRef.current = new Set();
+        }
+      }
+    }
+
+    if ("Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const tickId = window.setInterval(() => setClockTick(Date.now()), 30000);
+    return () => window.clearInterval(tickId);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const checkDeadlines = () => {
+      const now = Date.now();
+      const newlyDueTasks = data.tasks.filter((task) => {
+        if (task.completed) {
+          return false;
+        }
+
+        const dueAt = getDueAt(task);
+        if (!dueAt || dueAt.getTime() > now) {
+          return false;
+        }
+
+        const notificationKey = deadlineNotificationKey(task);
+        return !notifiedTaskKeysRef.current.has(notificationKey);
+      });
+
+      if (!newlyDueTasks.length) {
+        return;
+      }
+
+      const nextNotifiedKeys = new Set(notifiedTaskKeysRef.current);
+      for (const task of newlyDueTasks) {
+        const notificationKey = deadlineNotificationKey(task);
+        nextNotifiedKeys.add(notificationKey);
+
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("Task deadline reached", {
+            body: `${task.title} is due now.`,
+          });
+        }
+      }
+
+      notifiedTaskKeysRef.current = nextNotifiedKeys;
+      localStorage.setItem(NOTIFIED_TASKS_KEY, JSON.stringify(Array.from(nextNotifiedKeys)));
+
+      if (newlyDueTasks.length === 1) {
+        setDeadlineMessage(`Deadline reached: ${newlyDueTasks[0].title}`);
+      } else {
+        setDeadlineMessage(`${newlyDueTasks.length} tasks just reached their deadlines.`);
+      }
+    };
+
+    checkDeadlines();
+    const intervalId = window.setInterval(checkDeadlines, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [data.tasks]);
+
+  const dueTodayCount = useMemo(() => {
+    const now = new Date(clockTick);
+    return data.tasks.filter((task) => isDueToday(task, now)).length;
+  }, [clockTick, data.tasks]);
+
   const filteredTasks = useMemo(() => {
+    const now = new Date(clockTick);
+
     return data.tasks.filter((task) => {
       const matchesFilter =
         filter === "all" ||
         (filter === "open" && !task.completed) ||
-        (filter === "done" && task.completed);
+        (filter === "done" && task.completed) ||
+        (filter === "due_today" && isDueToday(task, now));
       const matchesCategory = category === "all" || task.category === category;
       const haystack = `${task.title} ${task.notes} ${task.category}`.toLowerCase();
       const matchesQuery = !query || haystack.includes(query.toLowerCase());
       return matchesFilter && matchesCategory && matchesQuery;
     });
-  }, [category, data.tasks, filter, query]);
+  }, [category, clockTick, data.tasks, filter, query]);
 
   const selectedTask = data.tasks.find((task) => task.id === selectedId) || filteredTasks[0] || null;
 
@@ -207,10 +381,11 @@ export default function Home() {
         body: JSON.stringify({
           ...createForm,
           due_date: createForm.due_date || null,
+          due_time: createForm.due_time || null,
         }),
       });
       setData(next);
-      setCreateForm((current) => ({ ...current, title: "", due_date: "" }));
+      setCreateForm((current) => ({ ...current, title: "", due_date: "", due_time: "" }));
       setSelectedId(next.task?.id || next.tasks[0]?.id || "");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create task.");
@@ -276,6 +451,16 @@ export default function Home() {
     }
   }
 
+  async function enableNotifications() {
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+  }
+
   return (
     <main className="page-shell">
       <section className="topbar">
@@ -310,10 +495,26 @@ export default function Home() {
           <p>Closed</p>
         </article>
         <article className="summary-tile">
-          <span>{data.summary.due_today}</span>
+          <span>{dueTodayCount}</span>
           <p>Due today</p>
         </article>
       </section>
+
+      {deadlineMessage ? (
+        <section className="message notice-strip">
+          <span>{deadlineMessage}</span>
+          <div className="notice-actions">
+            {notificationPermission === "default" ? (
+              <button className="secondary-button" onClick={() => void enableNotifications()}>
+                Enable browser alerts
+              </button>
+            ) : null}
+            <button className="link-button" onClick={() => setDeadlineMessage("")}>
+              Dismiss
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="workspace-grid">
         <aside className="sidebar-panel">
@@ -352,6 +553,11 @@ export default function Home() {
               value={createForm.due_date}
               onChange={(event) => setCreateForm((current) => ({ ...current, due_date: event.target.value }))}
             />
+            <input
+              type="time"
+              value={createForm.due_time}
+              onChange={(event) => setCreateForm((current) => ({ ...current, due_time: event.target.value }))}
+            />
             <button type="submit" className="primary-button" disabled={saving}>
               Create task
             </button>
@@ -384,6 +590,12 @@ export default function Home() {
               </button>
               <button className={filter === "done" ? "tab-button active" : "tab-button"} onClick={() => setFilter("done")}>
                 Closed
+              </button>
+              <button
+                className={filter === "due_today" ? "tab-button active" : "tab-button"}
+                onClick={() => setFilter("due_today")}
+              >
+                Today
               </button>
             </div>
             <select value={category} onChange={(event) => setCategory(event.target.value)}>
@@ -434,8 +646,8 @@ export default function Home() {
                   <p>{task.notes || "No notes yet."}</p>
                   <div className="meta-row">
                     <span className="meta-badge">{task.category}</span>
-                    <span className={`due-badge ${relativeDueTone(task.due_date, task.completed)}`}>
-                      {dueLabel(task.due_date)}
+                    <span className={`due-badge ${relativeDueTone(task.due_date, task.due_time, task.completed)}`}>
+                      {dueLabel(task.due_date, task.due_time)}
                     </span>
                     <span className="meta-muted">
                       Updated{" "}
@@ -490,6 +702,13 @@ export default function Home() {
                 value={draft.due_date ?? ""}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, due_date: event.target.value || null }))
+                }
+              />
+              <input
+                type="time"
+                value={draft.due_time ?? ""}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, due_time: event.target.value || null }))
                 }
               />
               <label className="checkline">

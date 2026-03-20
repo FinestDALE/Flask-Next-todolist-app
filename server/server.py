@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -39,6 +39,7 @@ class TaskBase(BaseModel):
     category: str = "General"
     priority: Priority = "medium"
     due_date: date | None = None
+    due_time: time | None = None
 
     @field_validator("title", "notes", "category", mode="before")
     @classmethod
@@ -52,9 +53,9 @@ class TaskBase(BaseModel):
     def normalize_priority(cls, value: object) -> str:
         return str(value or "medium").strip().lower()
 
-    @field_validator("due_date", mode="before")
+    @field_validator("due_date", "due_time", mode="before")
     @classmethod
-    def normalize_due_date(cls, value: object) -> object:
+    def normalize_due_fields(cls, value: object) -> object:
         if value in ("", None):
             return None
         return value
@@ -94,6 +95,7 @@ class TaskUpdate(BaseModel):
     category: str | None = None
     priority: Priority | None = None
     due_date: date | None = None
+    due_time: time | None = None
 
     @field_validator("title", "notes", "category", mode="before")
     @classmethod
@@ -109,9 +111,9 @@ class TaskUpdate(BaseModel):
             return None
         return str(value).strip().lower()
 
-    @field_validator("due_date", mode="before")
+    @field_validator("due_date", "due_time", mode="before")
     @classmethod
-    def normalize_optional_due_date(cls, value: object) -> object:
+    def normalize_optional_due_fields(cls, value: object) -> object:
         if value in ("", None):
             return None
         return value
@@ -147,6 +149,7 @@ def default_store() -> TaskStore:
                 category="Personal",
                 priority="high",
                 due_date=today,
+                due_time=time(hour=9, minute=0),
                 created_at=now_utc(),
                 updated_at=now_utc(),
             ),
@@ -158,6 +161,7 @@ def default_store() -> TaskStore:
                 category="Work",
                 priority="medium",
                 due_date=None,
+                due_time=None,
                 created_at=now_utc(),
                 updated_at=now_utc(),
             ),

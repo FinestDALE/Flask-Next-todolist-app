@@ -161,7 +161,8 @@ textarea:focus-visible {
 .tab-row,
 .meta-row,
 .task-row-top,
-.details-actions {
+.details-actions,
+.notice-actions {
   display: flex;
   gap: 0.75rem;
 }
@@ -178,6 +179,22 @@ textarea:focus-visible {
   margin-top: 1rem;
   border-radius: 14px;
   padding: 0.85rem;
+}
+
+.notice-strip {
+  margin-top: 1rem;
+  border: 1px solid rgba(31, 136, 61, 0.2);
+  background: rgba(31, 136, 61, 0.08);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.notice-actions {
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 .summary-tile {
@@ -290,6 +307,18 @@ textarea:focus-visible {
 .secondary-button,
 .tab-button {
   background: var(--bg-accent);
+}
+
+.tab-button {
+  padding: 0.5rem 0.72rem;
+  font-size: 0.92rem;
+}
+
+.sidebar-panel .panel input,
+.sidebar-panel .panel select,
+.sidebar-panel .panel button {
+  padding-top: 0.62rem;
+  padding-bottom: 0.62rem;
 }
 
 .secondary-button:hover,
