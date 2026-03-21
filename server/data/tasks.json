@@ -11,6 +11,18 @@
       "id": "9b9b22e9-d569-47f0-be37-96e1d9e1c266",
       "created_at": "2026-03-20T11:32:45.892200Z",
       "updated_at": "2026-03-20T11:46:53.389331Z"
+    },
+    {
+      "title": "Go hiking",
+      "notes": "at mount everest",
+      "completed": false,
+      "category": "General",
+      "priority": "high",
+      "due_date": "2026-03-22",
+      "due_time": "04:20:00",
+      "id": "452f0925-efc0-4f86-b71d-80f9ff2540ca",
+      "created_at": "2026-03-21T01:18:40.735224Z",
+      "updated_at": "2026-03-21T01:19:10.606951Z"
     }
   ]
 }
