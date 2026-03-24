@@ -3,14 +3,14 @@
     {
       "title": "sleep",
       "notes": "",
-      "completed": true,
+      "completed": false,
       "category": "General",
       "priority": "medium",
       "due_date": "2026-03-20",
       "due_time": null,
       "id": "9b9b22e9-d569-47f0-be37-96e1d9e1c266",
       "created_at": "2026-03-20T11:32:45.892200Z",
-      "updated_at": "2026-03-20T11:46:53.389331Z"
+      "updated_at": "2026-03-24T10:42:29.805606Z"
     },
     {
       "title": "Go hiking",
@@ -22,7 +22,19 @@
       "due_time": "04:20:00",
       "id": "452f0925-efc0-4f86-b71d-80f9ff2540ca",
       "created_at": "2026-03-21T01:18:40.735224Z",
-      "updated_at": "2026-03-21T01:19:10.606951Z"
+      "updated_at": "2026-03-24T10:42:28.751350Z"
+    },
+    {
+      "title": "workout",
+      "notes": "",
+      "completed": false,
+      "category": "Spicifc",
+      "priority": "low",
+      "due_date": "2026-03-29",
+      "due_time": "18:00:00",
+      "id": "623bb8e9-9a65-4018-ba0d-1bdcb6ebf49c",
+      "created_at": "2026-03-24T10:42:12.209829Z",
+      "updated_at": "2026-03-24T10:42:12.209829Z"
     }
   ]
 }
