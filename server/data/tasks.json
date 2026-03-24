@@ -26,7 +26,7 @@
     },
     {
       "title": "workout",
-      "notes": "",
+      "notes": "hi",
       "completed": false,
       "category": "Spicifc",
       "priority": "low",
@@ -34,7 +34,19 @@
       "due_time": "18:00:00",
       "id": "623bb8e9-9a65-4018-ba0d-1bdcb6ebf49c",
       "created_at": "2026-03-24T10:42:12.209829Z",
-      "updated_at": "2026-03-24T10:42:12.209829Z"
+      "updated_at": "2026-03-24T10:58:38.493602Z"
+    },
+    {
+      "title": "Go to work",
+      "notes": "",
+      "completed": false,
+      "category": "General",
+      "priority": "medium",
+      "due_date": null,
+      "due_time": null,
+      "id": "a2f3f4c4-6023-42bc-8dd5-a29a19835077",
+      "created_at": "2026-03-24T10:57:20.829799Z",
+      "updated_at": "2026-03-24T10:57:20.829799Z"
     }
   ]
 }

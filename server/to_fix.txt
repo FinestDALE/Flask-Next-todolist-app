@@ -1,0 +1,169 @@
+
+======================================================================
+  DRY VIOLATIONS TO FIX — server.py
+  DRY = "Don't Repeat Yourself"
+======================================================================
+
+WHAT IS DRY AND WHY DOES IT MATTER?
+------------------------------------
+Imagine you have a recipe for pancakes written on two sticky notes
+in your kitchen. One day you realize you need less sugar, so you
+update one sticky note but forget the other. Now you have two
+different recipes and you don't know which one is right.
+
+That's exactly what happens in code when you copy-paste logic.
+Today both copies work. Tomorrow you fix a bug in one copy and
+forget the other exists. Now your app has a bug that's invisible
+because the broken copy "looks fine" on its own.
+
+The rule: if the same logic exists in more than one place, put it
+in ONE shared function and call that function everywhere.
+
+
+----------------------------------------------------------------------
+1. normalize_text vs normalize_optional_text — MAJOR
+----------------------------------------------------------------------
+
+WHERE:
+  - TaskBase line 44     → normalize_text
+  - TaskUpdate line 100  → normalize_optional_text
+
+WHAT THEY DO:
+  Both strip whitespace from text. The only difference is that
+  normalize_optional_text passes None through instead of converting
+  it to "".
+
+WHY FIX:
+  If you later decide text should also be lowercased, or trimmed
+  differently, you'd need to remember to update BOTH functions.
+  You will forget one. Write one shared function like:
+
+    def strip_text(value, allow_none=False):
+        if value is None:
+            return None if allow_none else ""
+        return str(value).strip()
+
+  Then both classes call strip_text().
+
+
+----------------------------------------------------------------------
+2. normalize_priority vs normalize_optional_priority — MAJOR
+----------------------------------------------------------------------
+
+WHERE:
+  - TaskBase line 51     → normalize_priority
+  - TaskUpdate line 107  → normalize_optional_priority
+
+WHAT THEY DO:
+  Both strip whitespace and lowercase the priority string.
+  One defaults to "medium", the other passes None through.
+
+WHY FIX:
+  Same problem as #1. If you add a new priority level like "urgent"
+  and need to change the normalization logic, you have to find and
+  update two separate functions that do the same thing.
+
+
+----------------------------------------------------------------------
+3. normalize_due_fields vs normalize_optional_due_fields — MINOR
+----------------------------------------------------------------------
+
+WHERE:
+  - TaskBase line 56     → normalize_due_fields
+  - TaskUpdate line 114  → normalize_optional_due_fields
+
+WHAT THEY DO:
+  Both check if the value is "" or None, and return None.
+  These are CHARACTER-FOR-CHARACTER identical. Literally the same
+  code with a different function name.
+
+WHY FIX:
+  This is the most obvious case. There is zero reason for two copies
+  of the same function to exist. If one gets changed, the other
+  becomes wrong silently.
+
+
+----------------------------------------------------------------------
+4. ensure_category vs fill_blank_category — MAJOR
+----------------------------------------------------------------------
+
+WHERE:
+  - TaskBase line 63     → ensure_category: return value or "General"
+  - TaskUpdate line 129  → fill_blank_category: same, but skips None
+
+WHAT THEY DO:
+  Both fall back to the string "General" when the category is empty.
+
+WHY FIX:
+  The string "General" is the real problem here. It's a magic string
+  that appears in multiple places. If you rename the default category
+  to "Uncategorized" you need to find every place "General" appears.
+  You WILL miss one. Instead, define it once:
+
+    DEFAULT_CATEGORY = "General"
+
+  Then reference DEFAULT_CATEGORY everywhere.
+
+
+----------------------------------------------------------------------
+5. ensure_title vs fill_blank_title vs require_title — MAJOR
+----------------------------------------------------------------------
+
+WHERE:
+  - Task line 74         → ensure_title: return value or "Untitled task"
+  - TaskUpdate line 121  → fill_blank_title: same, but skips None
+  - TaskCreate line 83   → require_title: raises error if blank
+
+WHAT THEY DO:
+  Three classes, three validators, all answering the question
+  "what do we do when the title is blank?"
+
+  The string "Untitled task" is hardcoded in TWO of these.
+
+WHY FIX:
+  This is the most dangerous one. Imagine a teammate changes
+  "Untitled task" to "New task" in Task.ensure_title but doesn't
+  know TaskUpdate.fill_blank_title also has "Untitled task".
+  Now creating a task says "New task" but editing a task says
+  "Untitled task". The app looks broken but nobody knows why
+  because both functions "look correct" in isolation.
+
+  Fix: define DEFAULT_TITLE = "Untitled task" once. All three
+  validators reference that constant.
+
+
+----------------------------------------------------------------------
+6. DATA_DIR.mkdir() called twice — MINOR
+----------------------------------------------------------------------
+
+WHERE:
+  - ensure_store() line 173  → DATA_DIR.mkdir(parents=True, exist_ok=True)
+  - save_store() line 182    → DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+WHAT THEY DO:
+  Both make sure the data directory exists before reading/writing.
+
+WHY FIX:
+  Every endpoint calls ensure_store() first, which already creates
+  the directory. Then save_store() creates it again unnecessarily.
+  It won't cause a bug, but it's a sign of copy-paste thinking.
+  If you later change the directory path, you'd need to update
+  both lines.
+
+
+======================================================================
+  TAKEAWAY
+======================================================================
+
+The pattern in all 6 issues is the same:
+
+  COPY + PASTE = TWO PLACES TO MAINTAIN
+
+  TWO PLACES TO MAINTAIN = ONE WILL BE FORGOTTEN
+
+  ONE FORGOTTEN = A BUG THAT'S INVISIBLE UNTIL IT HURTS
+
+Every time you're about to copy-paste code, stop and ask:
+"Can I write this once and call it from both places?"
+
+The answer is almost always yes.
