@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Task = {
   id: string;
@@ -31,6 +31,12 @@ type ApiPayload = ApiState & {
 };
 
 type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "dueDate" | "dueTime" | "completed">;
+type FloatingNotice = {
+  kind: "deadline" | "error";
+  title: string;
+  body: string;
+  isExiting: boolean;
+};
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:5000/api";
 
@@ -188,12 +194,14 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
-  const [deadlineMessage, setDeadlineMessage] = useState("");
+  const [floatingNotice, setFloatingNotice] = useState<FloatingNotice | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     "unsupported"
   );
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
+  const noticeTimerRef = useRef<number | null>(null);
+  const floatingNoticeRef = useRef<FloatingNotice | null>(null);
   const [createForm, setCreateForm] = useState({
     title: "",
     category: "General",
@@ -215,6 +223,75 @@ export default function Home() {
       throw new Error(body.error || "Request failed.");
     }
     return body;
+  }
+
+  const dismissFloatingNotice = useCallback(() => {
+    const currentNotice = floatingNoticeRef.current;
+    if (!currentNotice || currentNotice.isExiting) {
+      return;
+    }
+
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+
+    setFloatingNotice({ ...currentNotice, isExiting: true });
+
+    noticeTimerRef.current = window.setTimeout(() => {
+      setFloatingNotice(null);
+      noticeTimerRef.current = null;
+    }, 220);
+  }, []);
+
+  const showFloatingNotice = useCallback(
+    (kind: "deadline" | "error", title: string, body: string, durationMs = 12000) => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+        noticeTimerRef.current = null;
+      }
+
+      setFloatingNotice({ kind, title, body, isExiting: false });
+
+      noticeTimerRef.current = window.setTimeout(() => {
+        dismissFloatingNotice();
+      }, durationMs);
+    },
+    [dismissFloatingNotice]
+  );
+
+  function validateDeadlineInput(dateValue: string | null, timeValue: string | null) {
+    if (!dateValue && !timeValue) {
+      return "";
+    }
+
+    if (!dateValue || !timeValue) {
+      return "Task date is invalid. Please choose both a due date and due time.";
+    }
+
+    const now = new Date();
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+
+    const dueDate = new Date(`${dateValue}T00:00:00`);
+    if (Number.isNaN(dueDate.getTime())) {
+      return "Task date is invalid. Please choose a valid due date and time.";
+    }
+
+    if (dueDate < today) {
+      return "Task date is invalid. Due date cannot be earlier than today.";
+    }
+
+    if (dueDate.getTime() === today.getTime()) {
+      const [hours, minutes] = timeValue.split(":");
+      const dueTimeMinutes = Number(hours) * 60 + Number(minutes);
+      const nowTimeMinutes = now.getHours() * 60 + now.getMinutes();
+
+      if (dueTimeMinutes < nowTimeMinutes) {
+        return "Task time is invalid. Due time cannot be earlier than the current time.";
+      }
+    }
+
+    return "";
   }
 
   async function loadTasks() {
@@ -276,6 +353,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    floatingNoticeRef.current = floatingNotice;
+  }, [floatingNotice]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -325,16 +406,35 @@ export default function Home() {
       localStorage.setItem(NOTIFIED_TASKS_KEY, JSON.stringify(Array.from(nextNotifiedKeys)));
 
       if (newlyDueTasks.length === 1) {
-        setDeadlineMessage(`Deadline reached: ${newlyDueTasks[0].title}`);
+        showFloatingNotice("deadline", "Deadline reached", `${newlyDueTasks[0].title} is due now.`);
       } else {
-        setDeadlineMessage(`${newlyDueTasks.length} tasks just reached their deadlines.`);
+        showFloatingNotice("deadline", "Multiple deadlines reached", `${newlyDueTasks.length} tasks just reached their deadlines.`);
       }
     };
 
     checkDeadlines();
     const intervalId = window.setInterval(checkDeadlines, 30000);
     return () => window.clearInterval(intervalId);
-  }, [data.tasks]);
+  }, [data.tasks, showFloatingNotice]);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!floatingNotice) {
+      return;
+    }
+
+    document.getElementById("floating-notice")?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [floatingNotice]);
 
   const dueTodayCount = useMemo(() => {
     const now = new Date(clockTick);
@@ -371,6 +471,14 @@ export default function Home() {
     event.preventDefault();
     if (!createForm.title.trim()) {
       setError("Task title is required.");
+      showFloatingNotice("error", "Validation error", "Task title is required.", 10000);
+      return;
+    }
+
+    const deadlineError = validateDeadlineInput(createForm.dueDate || null, createForm.dueTime || null);
+    if (deadlineError) {
+      setError(deadlineError);
+      showFloatingNotice("error", "Validation error", deadlineError, 10000);
       return;
     }
     setSaving(true);
@@ -413,6 +521,13 @@ export default function Home() {
 
   async function saveSelectedTask() {
     if (!selectedTask) {
+      return;
+    }
+
+    const deadlineError = validateDeadlineInput(draft.dueDate, draft.dueTime);
+    if (deadlineError) {
+      setError(deadlineError);
+      showFloatingNotice("error", "Validation error", deadlineError, 10000);
       return;
     }
 
@@ -500,16 +615,37 @@ export default function Home() {
         </article>
       </section>
 
-      {deadlineMessage ? (
-        <section className="message notice-strip">
-          <span>{deadlineMessage}</span>
-          <div className="notice-actions">
-            {notificationPermission === "default" ? (
+      {floatingNotice ? (
+        <section
+          id="floating-notice"
+          className={`deadline-toast ${floatingNotice.kind === "error" ? "deadline-toast--error" : ""} ${
+            floatingNotice.isExiting ? "deadline-toast--exit" : ""
+          }`}
+          role="alert"
+          aria-live="assertive"
+        >
+          <div className="deadline-toast__icon" aria-hidden="true">
+            {floatingNotice.kind === "error" ? "×" : "!"}
+          </div>
+          <div className="deadline-toast__body">
+            <p className="deadline-toast__kicker">
+              {floatingNotice.kind === "error" ? "Validation" : "Task alert"}
+            </p>
+            <h2>{floatingNotice.title}</h2>
+            <p>{floatingNotice.body}</p>
+          </div>
+          <div className="deadline-toast__actions">
+            {floatingNotice.kind === "deadline" && notificationPermission === "default" ? (
               <button className="secondary-button" onClick={() => void enableNotifications()}>
-                Enable browser alerts
+                Enable alerts
               </button>
             ) : null}
-            <button className="link-button" onClick={() => setDeadlineMessage("")}>
+            {floatingNotice.kind === "deadline" ? (
+              <button className="primary-button" onClick={() => setFilter("dueToday")}>
+                Show due today
+              </button>
+            ) : null}
+            <button className="link-button" onClick={dismissFloatingNotice}>
               Dismiss
             </button>
           </div>

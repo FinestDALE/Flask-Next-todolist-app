@@ -13,6 +13,8 @@
   --primary-strong: #166534;
   --danger: #cf222e;
   --danger-soft: rgba(207, 34, 46, 0.08);
+  --warning: #9a6700;
+  --warning-soft: rgba(154, 103, 0, 0.12);
   --shadow: 0 1px 0 rgba(31, 35, 40, 0.04), 0 8px 24px rgba(140, 149, 159, 0.16);
 }
 
@@ -29,6 +31,8 @@
   --primary-strong: #2ea043;
   --danger: #f85149;
   --danger-soft: rgba(248, 81, 73, 0.12);
+  --warning: #d29922;
+  --warning-soft: rgba(210, 153, 34, 0.16);
   --shadow: 0 1px 0 rgba(240, 246, 252, 0.02), 0 16px 40px rgba(1, 4, 9, 0.35);
 }
 
@@ -161,8 +165,7 @@ textarea:focus-visible {
 .tab-row,
 .meta-row,
 .task-row-top,
-.details-actions,
-.notice-actions {
+.details-actions {
   display: flex;
   gap: 0.75rem;
 }
@@ -179,22 +182,6 @@ textarea:focus-visible {
   margin-top: 1rem;
   border-radius: 14px;
   padding: 0.85rem;
-}
-
-.notice-strip {
-  margin-top: 1rem;
-  border: 1px solid rgba(31, 136, 61, 0.2);
-  background: rgba(31, 136, 61, 0.08);
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.notice-actions {
-  flex-wrap: wrap;
-  align-items: center;
 }
 
 .summary-tile {
@@ -458,10 +445,116 @@ textarea:focus-visible {
   border-radius: 10px;
 }
 
+.deadline-toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  width: min(760px, calc(100vw - 2rem));
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(154, 103, 0, 0.28);
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(154, 103, 0, 0.18), transparent 55%),
+    var(--panel);
+  box-shadow: 0 24px 56px rgba(154, 103, 0, 0.24), var(--shadow);
+  backdrop-filter: blur(10px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.9rem;
+  align-items: center;
+  animation: toastIn 180ms ease-out;
+  pointer-events: auto;
+  opacity: 1;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.deadline-toast--error {
+  border-color: rgba(207, 34, 46, 0.28);
+  background:
+    linear-gradient(135deg, rgba(207, 34, 46, 0.16), transparent 55%),
+    var(--panel);
+  box-shadow: 0 24px 56px rgba(207, 34, 46, 0.22), var(--shadow);
+}
+
+.deadline-toast--exit {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-12px) scale(0.985);
+  box-shadow: 0 12px 28px rgba(154, 103, 0, 0.12), var(--shadow);
+}
+
+.deadline-toast__icon {
+  width: 2.6rem;
+  height: 2.6rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 1.3rem;
+  font-weight: 800;
+}
+
+.deadline-toast--error .deadline-toast__icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.deadline-toast__body h2,
+.deadline-toast__body p {
+  margin: 0;
+}
+
+.deadline-toast__kicker {
+  color: var(--warning);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.2rem !important;
+}
+
+.deadline-toast--error .deadline-toast__kicker {
+  color: var(--danger);
+}
+
+.deadline-toast__body h2 {
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.deadline-toast__body p:last-child {
+  margin-top: 0.28rem;
+  color: var(--muted);
+}
+
+.deadline-toast__actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .message.error {
   border: 1px solid rgba(207, 34, 46, 0.18);
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+@keyframes toastIn {
+  from {
+    transform: translateX(-50%) translateY(-12px) scale(0.985);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) translateY(0) scale(1);
+    opacity: 1;
+  }
 }
 
 @media (max-width: 1180px) {
@@ -490,5 +583,14 @@ textarea:focus-visible {
 
   .summary-tile {
     min-width: calc(50% - 0.5rem);
+  }
+
+  .deadline-toast {
+    grid-template-columns: 1fr;
+    top: 0.75rem;
+  }
+
+  .deadline-toast__actions {
+    justify-content: flex-start;
   }
 }

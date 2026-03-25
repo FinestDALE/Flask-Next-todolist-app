@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from flask import Flask, jsonify, make_response, request
 from pymongo import MongoClient
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 app = Flask(__name__)
 
@@ -59,6 +59,35 @@ def fallbackValue(value: str | None, default: str, *, allowNone: bool = False) -
     if value is None:
         return None if allowNone else default
     return value or default
+
+
+def validateDueDate(value: date | None) -> date | None:
+    if value is None:
+        return None
+
+    if value < datetime.now().date():
+        raise ValueError("Task date is invalid. Due date cannot be earlier than today.")
+
+    return value
+
+
+def validateDueDateTime(dueDate: date | None, dueTime: time | None) -> tuple[date | None, time | None]:
+    if dueDate is None and dueTime is None:
+        return dueDate, dueTime
+
+    if dueDate is None or dueTime is None:
+        raise ValueError("Task date is invalid. Please choose both a due date and due time.")
+
+    currentDate = datetime.now().date()
+    currentTime = datetime.now().time()
+
+    if dueDate < currentDate:
+        raise ValueError("Task date is invalid. Due date cannot be earlier than today.")
+
+    if dueDate == currentDate and dueTime < currentTime:
+        raise ValueError("Task time is invalid. Due time cannot be earlier than the current time.")
+
+    return dueDate, dueTime
 
 
 class TaskRepository(Protocol):
@@ -122,6 +151,16 @@ class TaskCreate(TaskBase):
             raise ValueError("Task title is required.")
         return value
 
+    @field_validator("dueDate")
+    @classmethod
+    def ensureFutureDueDate(cls, value: date | None) -> date | None:
+        return validateDueDate(value)
+
+    @model_validator(mode="after")
+    def ensureValidDeadline(self) -> "TaskCreate":
+        validateDueDateTime(self.dueDate, self.dueTime)
+        return self
+
 
 class TaskUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -158,6 +197,16 @@ class TaskUpdate(BaseModel):
     @classmethod
     def fillBlankCategory(cls, value: str | None) -> str | None:
         return fallbackValue(value, defaultCategory, allowNone=True)
+
+    @field_validator("dueDate")
+    @classmethod
+    def ensureFutureDueDate(cls, value: date | None) -> date | None:
+        return validateDueDate(value)
+
+    @model_validator(mode="after")
+    def ensureValidDeadline(self) -> "TaskUpdate":
+        validateDueDateTime(self.dueDate, self.dueTime)
+        return self
 
 
 class TaskStore(BaseModel):
