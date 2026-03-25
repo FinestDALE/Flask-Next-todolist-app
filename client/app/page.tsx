@@ -9,10 +9,10 @@ type Task = {
   completed: boolean;
   category: string;
   priority: "low" | "medium" | "high";
-  due_date: string | null;
-  due_time: string | null;
-  created_at: string;
-  updated_at: string;
+  dueDate: string | null;
+  dueTime: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type ApiState = {
@@ -22,7 +22,7 @@ type ApiState = {
     total: number;
     completed: number;
     open: number;
-    due_today: number;
+    dueToday: number;
   };
 };
 
@@ -30,14 +30,14 @@ type ApiPayload = ApiState & {
   task?: Task;
 };
 
-type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "due_date" | "due_time" | "completed">;
+type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "dueDate" | "dueTime" | "completed">;
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:5000/api";
 
 const emptyState: ApiState = {
   tasks: [],
   categories: [],
-  summary: { total: 0, completed: 0, open: 0, due_today: 0 },
+  summary: { total: 0, completed: 0, open: 0, dueToday: 0 },
 };
 
 const emptyDraft: TaskDraft = {
@@ -45,8 +45,8 @@ const emptyDraft: TaskDraft = {
   notes: "",
   category: "General",
   priority: "medium",
-  due_date: null,
-  due_time: null,
+  dueDate: null,
+  dueTime: null,
   completed: false,
 };
 
@@ -62,8 +62,8 @@ function createDraft(task: Task | null): TaskDraft {
     notes: task.notes,
     category: task.category,
     priority: task.priority,
-    due_date: task.due_date,
-    due_time: task.due_time,
+    dueDate: task.dueDate,
+    dueTime: task.dueTime,
     completed: task.completed,
   };
 }
@@ -137,14 +137,14 @@ function relativeDueTone(dateValue: string | null, timeValue: string | null, com
 }
 
 function getDueAt(task: Task) {
-  if (!task.due_date && !task.due_time) {
+  if (!task.dueDate && !task.dueTime) {
     return null;
   }
 
-  const baseDate = task.due_date ? new Date(`${task.due_date}T00:00:00`) : new Date();
+  const baseDate = task.dueDate ? new Date(`${task.dueDate}T00:00:00`) : new Date();
 
-  if (task.due_time) {
-    const [hours, minutes] = task.due_time.split(":");
+  if (task.dueTime) {
+    const [hours, minutes] = task.dueTime.split(":");
     baseDate.setHours(Number(hours), Number(minutes), 0, 0);
   } else {
     baseDate.setHours(23, 59, 59, 999);
@@ -161,7 +161,7 @@ function toLocalDateKey(value: Date) {
 }
 
 function deadlineNotificationKey(task: Task) {
-  return `${task.id}:${task.due_date ?? ""}:${task.due_time ?? ""}`;
+  return `${task.id}:${task.dueDate ?? ""}:${task.dueTime ?? ""}`;
 }
 
 function isDueToday(task: Task, now: Date) {
@@ -182,7 +182,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState<"all" | "open" | "done" | "due_today">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "done" | "dueToday">("all");
   const [category, setCategory] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -198,8 +198,8 @@ export default function Home() {
     title: "",
     category: "General",
     priority: "medium" as Task["priority"],
-    due_date: "",
-    due_time: "",
+    dueDate: "",
+    dueTime: "",
   });
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -349,7 +349,7 @@ export default function Home() {
         filter === "all" ||
         (filter === "open" && !task.completed) ||
         (filter === "done" && task.completed) ||
-        (filter === "due_today" && isDueToday(task, now));
+        (filter === "dueToday" && isDueToday(task, now));
       const matchesCategory = category === "all" || task.category === category;
       const haystack = `${task.title} ${task.notes} ${task.category}`.toLowerCase();
       const matchesQuery = !query || haystack.includes(query.toLowerCase());
@@ -380,12 +380,12 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           ...createForm,
-          due_date: createForm.due_date || null,
-          due_time: createForm.due_time || null,
+          dueDate: createForm.dueDate || null,
+          dueTime: createForm.dueTime || null,
         }),
       });
       setData(next);
-      setCreateForm((current) => ({ ...current, title: "", due_date: "", due_time: "" }));
+      setCreateForm((current) => ({ ...current, title: "", dueDate: "", dueTime: "" }));
       setSelectedId(next.task?.id || next.tasks[0]?.id || "");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create task.");
@@ -550,13 +550,13 @@ export default function Home() {
             </div>
             <input
               type="date"
-              value={createForm.due_date}
-              onChange={(event) => setCreateForm((current) => ({ ...current, due_date: event.target.value }))}
+              value={createForm.dueDate}
+              onChange={(event) => setCreateForm((current) => ({ ...current, dueDate: event.target.value }))}
             />
             <input
               type="time"
-              value={createForm.due_time}
-              onChange={(event) => setCreateForm((current) => ({ ...current, due_time: event.target.value }))}
+              value={createForm.dueTime}
+              onChange={(event) => setCreateForm((current) => ({ ...current, dueTime: event.target.value }))}
             />
             <button type="submit" className="primary-button" disabled={saving}>
               Create task
@@ -592,8 +592,8 @@ export default function Home() {
                 Closed
               </button>
               <button
-                className={filter === "due_today" ? "tab-button active" : "tab-button"}
-                onClick={() => setFilter("due_today")}
+                className={filter === "dueToday" ? "tab-button active" : "tab-button"}
+                onClick={() => setFilter("dueToday")}
               >
                 Today
               </button>
@@ -646,12 +646,12 @@ export default function Home() {
                   <p>{task.notes || "No notes yet."}</p>
                   <div className="meta-row">
                     <span className="meta-badge">{task.category}</span>
-                    <span className={`due-badge ${relativeDueTone(task.due_date, task.due_time, task.completed)}`}>
-                      {dueLabel(task.due_date, task.due_time)}
+                    <span className={`due-badge ${relativeDueTone(task.dueDate, task.dueTime, task.completed)}`}>
+                      {dueLabel(task.dueDate, task.dueTime)}
                     </span>
                     <span className="meta-muted">
                       Updated{" "}
-                      {new Date(task.updated_at).toLocaleDateString(undefined, {
+                      {new Date(task.updatedAt).toLocaleDateString(undefined, {
                         month: "short",
                         day: "numeric",
                       })}
@@ -699,16 +699,16 @@ export default function Home() {
               </div>
               <input
                 type="date"
-                value={draft.due_date ?? ""}
+                value={draft.dueDate ?? ""}
                 onChange={(event) =>
-                  setDraft((current) => ({ ...current, due_date: event.target.value || null }))
+                  setDraft((current) => ({ ...current, dueDate: event.target.value || null }))
                 }
               />
               <input
                 type="time"
-                value={draft.due_time ?? ""}
+                value={draft.dueTime ?? ""}
                 onChange={(event) =>
-                  setDraft((current) => ({ ...current, due_time: event.target.value || null }))
+                  setDraft((current) => ({ ...current, dueTime: event.target.value || null }))
                 }
               />
               <label className="checkline">

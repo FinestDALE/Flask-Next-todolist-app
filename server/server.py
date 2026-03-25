@@ -7,74 +7,104 @@ from typing import Literal
 from uuid import uuid4
 
 from flask import Flask, jsonify, make_response, request
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 app = Flask(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-STORE_PATH = DATA_DIR / "tasks.json"
-ALLOWED_DEV_ORIGINS = {
+baseDir = Path(__file__).resolve().parent
+dataDir = baseDir / "data"
+storePath = dataDir / "tasks.json"
+allowedDevOrigins = {
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3001",
 }
+defaultTitle = "Untitled task"
+defaultCategory = "General"
+defaultPriority = "medium"
 
 Priority = Literal["low", "medium", "high"]
 
 
-def now_utc() -> datetime:
+def nowUtc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def now_iso() -> str:
-    return now_utc().isoformat()
+def nowIso() -> str:
+    return nowUtc().isoformat()
+
+
+def normalizeTextValue(value: object, *, allowNone: bool = False) -> str | None:
+    if value is None:
+        return None if allowNone else ""
+    return str(value).strip()
+
+
+def normalizePriorityValue(value: object, *, allowNone: bool = False) -> str | None:
+    if value is None:
+        return None if allowNone else defaultPriority
+    normalized = str(value).strip().lower()
+    return normalized or (None if allowNone else defaultPriority)
+
+
+def normalizeDueValue(value: object) -> object:
+    if value in ("", None):
+        return None
+    return value
+
+
+def fallbackValue(value: str | None, default: str, *, allowNone: bool = False) -> str | None:
+    if value is None:
+        return None if allowNone else default
+    return value or default
+
+
+def ensureDataDir() -> None:
+    dataDir.mkdir(parents=True, exist_ok=True)
 
 
 class TaskBase(BaseModel):
-    title: str = "Untitled task"
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = defaultTitle
     notes: str = ""
     completed: bool = False
-    category: str = "General"
-    priority: Priority = "medium"
-    due_date: date | None = None
-    due_time: time | None = None
+    category: str = defaultCategory
+    priority: Priority = defaultPriority
+    dueDate: date | None = Field(default=None, validation_alias=AliasChoices("dueDate", "due_date"))
+    dueTime: time | None = Field(default=None, validation_alias=AliasChoices("dueTime", "due_time"))
 
     @field_validator("title", "notes", "category", mode="before")
     @classmethod
-    def normalize_text(cls, value: object) -> str:
-        if value is None:
-            return ""
-        return str(value).strip()
+    def normalizeText(cls, value: object) -> str:
+        return normalizeTextValue(value)
 
     @field_validator("priority", mode="before")
     @classmethod
-    def normalize_priority(cls, value: object) -> str:
-        return str(value or "medium").strip().lower()
+    def normalizePriority(cls, value: object) -> str:
+        return normalizePriorityValue(value) or defaultPriority
 
-    @field_validator("due_date", "due_time", mode="before")
+    @field_validator("dueDate", "dueTime", mode="before")
     @classmethod
-    def normalize_due_fields(cls, value: object) -> object:
-        if value in ("", None):
-            return None
-        return value
+    def normalizeDueFields(cls, value: object) -> object:
+        return normalizeDueValue(value)
 
     @field_validator("category")
     @classmethod
-    def ensure_category(cls, value: str) -> str:
-        return value or "General"
+    def ensureCategory(cls, value: str) -> str:
+        return fallbackValue(value, defaultCategory) or defaultCategory
 
 
 class Task(TaskBase):
     id: str
-    created_at: datetime
-    updated_at: datetime
+    createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
+    updatedAt: datetime = Field(validation_alias=AliasChoices("updatedAt", "updated_at"))
 
     @field_validator("title")
     @classmethod
-    def ensure_title(cls, value: str) -> str:
-        return value or "Untitled task"
+    def ensureTitle(cls, value: str) -> str:
+        return fallbackValue(value, defaultTitle) or defaultTitle
 
 
 class TaskCreate(TaskBase):
@@ -82,62 +112,54 @@ class TaskCreate(TaskBase):
 
     @field_validator("title")
     @classmethod
-    def require_title(cls, value: str) -> str:
+    def requireTitle(cls, value: str) -> str:
         if not value:
             raise ValueError("Task title is required.")
         return value
 
 
 class TaskUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     title: str | None = None
     notes: str | None = None
     completed: bool | None = None
     category: str | None = None
     priority: Priority | None = None
-    due_date: date | None = None
-    due_time: time | None = None
+    dueDate: date | None = Field(default=None, validation_alias=AliasChoices("dueDate", "due_date"))
+    dueTime: time | None = Field(default=None, validation_alias=AliasChoices("dueTime", "due_time"))
 
     @field_validator("title", "notes", "category", mode="before")
     @classmethod
-    def normalize_optional_text(cls, value: object) -> object:
-        if value is None:
-            return None
-        return str(value).strip()
+    def normalizeOptionalText(cls, value: object) -> object:
+        return normalizeTextValue(value, allowNone=True)
 
     @field_validator("priority", mode="before")
     @classmethod
-    def normalize_optional_priority(cls, value: object) -> object:
-        if value is None:
-            return None
-        return str(value).strip().lower()
+    def normalizeOptionalPriority(cls, value: object) -> object:
+        return normalizePriorityValue(value, allowNone=True)
 
-    @field_validator("due_date", "due_time", mode="before")
+    @field_validator("dueDate", "dueTime", mode="before")
     @classmethod
-    def normalize_optional_due_fields(cls, value: object) -> object:
-        if value in ("", None):
-            return None
-        return value
+    def normalizeOptionalDueFields(cls, value: object) -> object:
+        return normalizeDueValue(value)
 
     @field_validator("title")
     @classmethod
-    def fill_blank_title(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value or "Untitled task"
+    def fillBlankTitle(cls, value: str | None) -> str | None:
+        return fallbackValue(value, defaultTitle, allowNone=True)
 
     @field_validator("category")
     @classmethod
-    def fill_blank_category(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value or "General"
+    def fillBlankCategory(cls, value: str | None) -> str | None:
+        return fallbackValue(value, defaultCategory, allowNone=True)
 
 
 class TaskStore(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
 
 
-def default_store() -> TaskStore:
+def defaultStore() -> TaskStore:
     today = datetime.now().date()
     return TaskStore(
         tasks=[
@@ -148,10 +170,10 @@ def default_store() -> TaskStore:
                 completed=False,
                 category="Personal",
                 priority="high",
-                due_date=today,
-                due_time=time(hour=9, minute=0),
-                created_at=now_utc(),
-                updated_at=now_utc(),
+                dueDate=today,
+                dueTime=time(hour=9, minute=0),
+                createdAt=nowUtc(),
+                updatedAt=nowUtc(),
             ),
             Task(
                 id=str(uuid4()),
@@ -160,82 +182,82 @@ def default_store() -> TaskStore:
                 completed=False,
                 category="Work",
                 priority="medium",
-                due_date=None,
-                due_time=None,
-                created_at=now_utc(),
-                updated_at=now_utc(),
+                dueDate=None,
+                dueTime=None,
+                createdAt=nowUtc(),
+                updatedAt=nowUtc(),
             ),
         ]
     )
 
 
-def ensure_store() -> TaskStore:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not STORE_PATH.exists():
-        store = default_store()
-        save_store(store)
+def ensureStore() -> TaskStore:
+    ensureDataDir()
+    if not storePath.exists():
+        store = defaultStore()
+        saveStore(store)
         return store
-    return TaskStore.model_validate_json(STORE_PATH.read_text(encoding="utf-8"))
+    return TaskStore.model_validate_json(storePath.read_text(encoding="utf-8"))
 
 
-def save_store(store: TaskStore) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    STORE_PATH.write_text(json.dumps(store.model_dump(mode="json"), indent=2), encoding="utf-8")
+def saveStore(store: TaskStore) -> None:
+    ensureDataDir()
+    storePath.write_text(json.dumps(store.model_dump(mode="json"), indent=2), encoding="utf-8")
 
 
-def sort_tasks(tasks: list[Task]) -> list[Task]:
-    return sorted(tasks, key=lambda task: task.created_at, reverse=True)
+def sortTasks(tasks: list[Task]) -> list[Task]:
+    return sorted(tasks, key=lambda task: task.createdAt, reverse=True)
 
 
-def build_summary(tasks: list[Task]) -> dict[str, int]:
+def buildSummary(tasks: list[Task]) -> dict[str, int]:
     completed = sum(1 for task in tasks if task.completed)
     today = datetime.now().date()
-    due_today = sum(1 for task in tasks if not task.completed and task.due_date == today)
+    dueToday = sum(1 for task in tasks if not task.completed and task.dueDate == today)
     return {
         "total": len(tasks),
         "completed": completed,
         "open": len(tasks) - completed,
-        "due_today": due_today,
+        "dueToday": dueToday,
     }
 
 
-def response_payload(store: TaskStore) -> dict:
-    tasks = sort_tasks(store.tasks)
+def responsePayload(store: TaskStore) -> dict:
+    tasks = sortTasks(store.tasks)
     categories = sorted({task.category for task in tasks})
     return {
         "tasks": [task.model_dump(mode="json") for task in tasks],
-        "summary": build_summary(tasks),
+        "summary": buildSummary(tasks),
         "categories": categories,
     }
 
 
-def validation_error_response(error: ValidationError):
-    first_error = error.errors()[0]
-    message = first_error.get("msg", "Invalid request.")
+def validationErrorResponse(error: ValidationError):
+    firstError = error.errors()[0]
+    message = firstError.get("msg", "Invalid request.")
     return jsonify({"error": message}), 400
 
 
-def create_task_record(payload: TaskCreate) -> Task:
-    current_time = now_utc()
+def createTaskRecord(payload: TaskCreate) -> Task:
+    currentTime = nowUtc()
     return Task(
         id=str(uuid4()),
-        created_at=current_time,
-        updated_at=current_time,
+        createdAt=currentTime,
+        updatedAt=currentTime,
         **payload.model_dump(),
     )
 
 
-def apply_task_updates(current: Task, updates: TaskUpdate) -> Task:
+def applyTaskUpdates(current: Task, updates: TaskUpdate) -> Task:
     merged = current.model_dump()
     merged.update(updates.model_dump(exclude_unset=True))
-    merged["updated_at"] = now_utc()
+    merged["updatedAt"] = nowUtc()
     return Task.model_validate(merged)
 
 
 @app.after_request
-def add_cors_headers(response):
+def addCorsHeaders(response):
     origin = request.headers.get("Origin", "")
-    if origin in ALLOWED_DEV_ORIGINS:
+    if origin in allowedDevOrigins:
         response.headers["Access-Control-Allow-Origin"] = origin
     else:
         response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
@@ -245,7 +267,7 @@ def add_cors_headers(response):
 
 
 @app.before_request
-def handle_options():
+def handleOptions():
     if request.method == "OPTIONS":
         return make_response("", 204)
     return None
@@ -253,66 +275,66 @@ def handle_options():
 
 @app.get("/api/health")
 def health():
-    return jsonify({"status": "ok", "time": now_iso()})
+    return jsonify({"status": "ok", "time": nowIso()})
 
 
 @app.get("/api/tasks")
-def get_tasks():
-    return jsonify(response_payload(ensure_store()))
+def getTasks():
+    return jsonify(responsePayload(ensureStore()))
 
 
 @app.post("/api/tasks")
-def create_task():
-    store = ensure_store()
+def createTask():
+    store = ensureStore()
     payload = request.get_json(silent=True) or {}
     try:
-        new_task = create_task_record(TaskCreate.model_validate(payload))
+        newTask = createTaskRecord(TaskCreate.model_validate(payload))
     except ValidationError as error:
-        return validation_error_response(error)
+        return validationErrorResponse(error)
 
-    store.tasks.append(new_task)
-    save_store(store)
-    return jsonify({"task": new_task.model_dump(mode="json"), **response_payload(store)}), 201
+    store.tasks.append(newTask)
+    saveStore(store)
+    return jsonify({"task": newTask.model_dump(mode="json"), **responsePayload(store)}), 201
 
 
-@app.patch("/api/tasks/<task_id>")
-def update_task(task_id: str):
-    store = ensure_store()
+@app.patch("/api/tasks/<taskId>")
+def updateTask(taskId: str):
+    store = ensureStore()
     payload = request.get_json(silent=True) or {}
 
     try:
         updates = TaskUpdate.model_validate(payload)
     except ValidationError as error:
-        return validation_error_response(error)
+        return validationErrorResponse(error)
 
     for index, task in enumerate(store.tasks):
-        if task.id == task_id:
-            updated = apply_task_updates(task, updates)
+        if task.id == taskId:
+            updated = applyTaskUpdates(task, updates)
             store.tasks[index] = updated
-            save_store(store)
-            return jsonify({"task": updated.model_dump(mode="json"), **response_payload(store)})
+            saveStore(store)
+            return jsonify({"task": updated.model_dump(mode="json"), **responsePayload(store)})
 
     return jsonify({"error": "Task not found."}), 404
 
 
-@app.delete("/api/tasks/<task_id>")
-def delete_task(task_id: str):
-    store = ensure_store()
-    next_tasks = [task for task in store.tasks if task.id != task_id]
-    if len(next_tasks) == len(store.tasks):
+@app.delete("/api/tasks/<taskId>")
+def deleteTask(taskId: str):
+    store = ensureStore()
+    nextTasks = [task for task in store.tasks if task.id != taskId]
+    if len(nextTasks) == len(store.tasks):
         return jsonify({"error": "Task not found."}), 404
 
-    store.tasks = next_tasks
-    save_store(store)
-    return jsonify(response_payload(store))
+    store.tasks = nextTasks
+    saveStore(store)
+    return jsonify(responsePayload(store))
 
 
 @app.delete("/api/tasks")
-def clear_completed():
-    store = ensure_store()
+def clearCompleted():
+    store = ensureStore()
     store.tasks = [task for task in store.tasks if not task.completed]
-    save_store(store)
-    return jsonify(response_payload(store))
+    saveStore(store)
+    return jsonify(responsePayload(store))
 
 
 if __name__ == "__main__":
