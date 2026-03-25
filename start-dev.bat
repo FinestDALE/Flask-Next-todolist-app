@@ -4,10 +4,17 @@ setlocal
 set "ROOT=%~dp0"
 set "SERVER_DIR=%ROOT%server"
 set "CLIENT_DIR=%ROOT%client"
+set "MONGODB_URI=mongodb://127.0.0.1:27017"
+set "MONGODB_DB=todo_app"
+set "MONGODB_COLLECTION=tasks"
 set "PY_EXE="
 set "PY_ARGS="
 
-if exist "%LocalAppData%\Python\pythoncore-3.14-64\python.exe" (
+if not defined PY_EXE if exist "%SERVER_DIR%\venv\Scripts\python.exe" (
+  set "PY_EXE=%SERVER_DIR%\venv\Scripts\python.exe"
+)
+
+if not defined PY_EXE if exist "%LocalAppData%\Python\pythoncore-3.14-64\python.exe" (
   set "PY_EXE=%LocalAppData%\Python\pythoncore-3.14-64\python.exe"
 )
 
@@ -40,11 +47,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "Flask Server" /D "%SERVER_DIR%" "%PY_EXE%" %PY_ARGS% -m flask --app server.py run
+start "Flask Server" /D "%SERVER_DIR%" cmd /k "set MONGODB_URI=%MONGODB_URI% && set MONGODB_DB=%MONGODB_DB% && set MONGODB_COLLECTION=%MONGODB_COLLECTION% && %PY_EXE% %PY_ARGS% -m flask --app server.py run"
 start "Next Client" cmd /k "cd /d ""%CLIENT_DIR%"" && npm run dev"
 
 echo Started Flask and Next.js in separate windows.
 echo Flask API:  http://127.0.0.1:5000
 echo Next app:   http://localhost:3000
+echo MongoDB:    %MONGODB_URI%  ^(%MONGODB_DB%.%MONGODB_COLLECTION%^)
 
 endlocal

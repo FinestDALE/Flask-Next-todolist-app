@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import json
+import os
+from functools import lru_cache
 from datetime import date, datetime, time, timezone
-from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from flask import Flask, jsonify, make_response, request
+from pymongo import MongoClient
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 app = Flask(__name__)
 
-baseDir = Path(__file__).resolve().parent
-dataDir = baseDir / "data"
-storePath = dataDir / "tasks.json"
 allowedDevOrigins = {
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -23,6 +21,9 @@ allowedDevOrigins = {
 defaultTitle = "Untitled task"
 defaultCategory = "General"
 defaultPriority = "medium"
+defaultMongoUri = "mongodb://127.0.0.1:27017"
+defaultMongoDb = "todo_app"
+defaultMongoCollection = "tasks"
 
 Priority = Literal["low", "medium", "high"]
 
@@ -60,8 +61,12 @@ def fallbackValue(value: str | None, default: str, *, allowNone: bool = False) -
     return value or default
 
 
-def ensureDataDir() -> None:
-    dataDir.mkdir(parents=True, exist_ok=True)
+class TaskRepository(Protocol):
+    def loadStore(self) -> "TaskStore":
+        ...
+
+    def saveStore(self, store: "TaskStore") -> None:
+        ...
 
 
 class TaskBase(BaseModel):
@@ -191,18 +196,65 @@ def defaultStore() -> TaskStore:
     )
 
 
-def ensureStore() -> TaskStore:
-    ensureDataDir()
-    if not storePath.exists():
+class MongoTaskRepository:
+    def __init__(self, uri: str, databaseName: str, collectionName: str) -> None:
+        self.client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+        self.client.admin.command("ping")
+        self.collection = self.client[databaseName][collectionName]
+
+    def loadStore(self) -> TaskStore:
+        tasks = [self._documentToTask(document) for document in self.collection.find({})]
+        if tasks:
+            return TaskStore(tasks=tasks)
+
         store = defaultStore()
-        saveStore(store)
+        self.saveStore(store)
         return store
-    return TaskStore.model_validate_json(storePath.read_text(encoding="utf-8"))
+
+    def saveStore(self, store: TaskStore) -> None:
+        taskIds = [task.id for task in store.tasks]
+
+        # Upsert first, then prune removed tasks. This keeps writes simple
+        # without forcing route handlers to care about database specifics.
+        for task in store.tasks:
+            document = self._taskToDocument(task)
+            self.collection.replace_one({"_id": document["_id"]}, document, upsert=True)
+
+        if taskIds:
+            self.collection.delete_many({"_id": {"$nin": taskIds}})
+        else:
+            self.collection.delete_many({})
+
+    @staticmethod
+    def _taskToDocument(task: Task) -> dict[str, object]:
+        document = task.model_dump(mode="json")
+        document["_id"] = task.id
+        return document
+
+    @staticmethod
+    def _documentToTask(document: dict[str, object]) -> Task:
+        taskData = {key: value for key, value in document.items() if key != "_id"}
+        taskData.setdefault("id", str(document["_id"]))
+        return Task.model_validate(taskData)
+
+
+@lru_cache(maxsize=1)
+def getRepository() -> TaskRepository:
+    mongoUri = os.getenv("MONGODB_URI", defaultMongoUri).strip() or defaultMongoUri
+    mongoDbName = os.getenv("MONGODB_DB", defaultMongoDb).strip() or defaultMongoDb
+    mongoCollectionName = os.getenv("MONGODB_COLLECTION", defaultMongoCollection).strip() or defaultMongoCollection
+
+    repository = MongoTaskRepository(mongoUri, mongoDbName, mongoCollectionName)
+    app.logger.info("Using MongoDB task store.")
+    return repository
+
+
+def ensureStore() -> TaskStore:
+    return getRepository().loadStore()
 
 
 def saveStore(store: TaskStore) -> None:
-    ensureDataDir()
-    storePath.write_text(json.dumps(store.model_dump(mode="json"), indent=2), encoding="utf-8")
+    getRepository().saveStore(store)
 
 
 def sortTasks(tasks: list[Task]) -> list[Task]:

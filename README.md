@@ -19,8 +19,13 @@ Server:
 ```powershell
 cd server
 py -3 -m pip install -r requirements.txt
+$env:MONGODB_URI="mongodb://127.0.0.1:27017"
+$env:MONGODB_DB="todo_app"
+$env:MONGODB_COLLECTION="tasks"
 py -3 -m flask --app server.py run
 ```
+
+MongoDB is required. The Flask server now reads and writes tasks only from `todo_app.tasks`.
 
 Client:
 
