@@ -42,6 +42,11 @@ type SessionPayload = {
   expiresAt?: string;
 };
 
+type BasicApiMessage = {
+  ok: boolean;
+  message?: string;
+};
+
 type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "dueDate" | "dueTime" | "completed">;
 
 type AuthMode = "login" | "register";
@@ -195,6 +200,10 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [authError, setAuthError] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | "open" | "done" | "dueToday">("all");
   const [category, setCategory] = useState("all");
   const [query, setQuery] = useState("");
@@ -217,6 +226,11 @@ export default function Home() {
     name: "",
     email: "",
     password: "",
+  });
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
   });
   const noticeRef = useRef<HTMLDivElement | null>(null);
 
@@ -339,6 +353,33 @@ export default function Home() {
     }
   }, [authError, error]);
 
+  useEffect(() => {
+    if (!isSecurityOpen) {
+      return undefined;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsSecurityOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isSecurityOpen]);
+
+  useEffect(() => {
+    if (!isSecurityOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isSecurityOpen]);
+
   const filteredTasks = useMemo(() => {
     const now = new Date(clockTick);
     return data.tasks.filter((task) => {
@@ -374,6 +415,26 @@ export default function Home() {
     setCategory("all");
     setQuery("");
     setError("");
+    setPasswordError("");
+    setPasswordMessage("");
+    setIsSecurityOpen(false);
+    setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  }
+
+  function openSecurityDialog() {
+    setPasswordError("");
+    setPasswordMessage("");
+    setIsSecurityOpen(true);
+  }
+
+  function closeSecurityDialog() {
+    if (passwordBusy) {
+      return;
+    }
+    setIsSecurityOpen(false);
+    setPasswordError("");
+    setPasswordMessage("");
+    setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
   }
 
   function validateDeadlineInput(dateValue: string | null, timeValue: string | null) {
@@ -452,13 +513,42 @@ export default function Home() {
     setAuthBusy(true);
     setAuthError("");
     try {
-      await request<{ ok: true }>("/auth/logout", { method: "POST" });
+      await request<BasicApiMessage>("/auth/logout", { method: "POST" });
       setUser(null);
       resetBoardState();
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : "Could not sign you out.");
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  async function handlePasswordChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPasswordBusy(true);
+    setPasswordError("");
+    setPasswordMessage("");
+    try {
+      const response = await request<BasicApiMessage>("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify(passwordForm),
+      });
+      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+      setPasswordMessage(response.message || "Password updated successfully.");
+      window.setTimeout(() => {
+        setIsSecurityOpen(false);
+        setPasswordMessage("");
+      }, 900);
+    } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
+      setPasswordError(caught instanceof Error ? caught.message : "Could not change your password.");
+    } finally {
+      setPasswordBusy(false);
     }
   }
 
@@ -751,6 +841,9 @@ export default function Home() {
           <button className="secondary-button" onClick={() => void loadTasks()} disabled={loadingTasks || saving}>
             Refresh
           </button>
+          <button className="secondary-button" onClick={openSecurityDialog} disabled={authBusy}>
+            Account security
+          </button>
           <button className="secondary-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
             {theme === "light" ? "Dark theme" : "Light theme"}
           </button>
@@ -1028,6 +1121,72 @@ export default function Home() {
           </section>
         </aside>
       </section>
+
+      {isSecurityOpen ? (
+        <div className="dialog-backdrop" onClick={closeSecurityDialog}>
+          <section
+            className="dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-security-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-heading compact dialog-card__header">
+              <div>
+                <p className="eyebrow">Account</p>
+                <h2 id="account-security-title">Change password</h2>
+                <p>Keep your account secure without interrupting your planning flow.</p>
+              </div>
+              <button className="theme-toggle dialog-close" onClick={closeSecurityDialog} type="button" disabled={passwordBusy}>
+                Close
+              </button>
+            </div>
+
+            {passwordError ? <p className="message error inline-message">{passwordError}</p> : null}
+            {passwordMessage ? <p className="message success inline-message">{passwordMessage}</p> : null}
+
+            <form className="details-form account-form" onSubmit={handlePasswordChange}>
+              <label>
+                <span>Current password</span>
+                <input
+                  type="password"
+                  value={passwordForm.currentPassword}
+                  onChange={(event) =>
+                    setPasswordForm((current) => ({ ...current, currentPassword: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                <span>New password</span>
+                <input
+                  type="password"
+                  placeholder="Minimum 8 characters"
+                  value={passwordForm.newPassword}
+                  onChange={(event) => setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Confirm new password</span>
+                <input
+                  type="password"
+                  value={passwordForm.confirmPassword}
+                  onChange={(event) =>
+                    setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))
+                  }
+                />
+              </label>
+              <div className="details-actions dialog-actions">
+                <button className="secondary-button" type="button" onClick={closeSecurityDialog} disabled={passwordBusy}>
+                  Cancel
+                </button>
+                <button className="primary-button" type="submit" disabled={passwordBusy}>
+                  {passwordBusy ? "Updating password..." : "Change password"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

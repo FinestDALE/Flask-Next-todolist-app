@@ -55,6 +55,15 @@ class FakeAuthRepository:
             raise ValueError("Invalid email or password.")
         return record["user"]
 
+    def changePassword(self, userId: str, payload: server_module.AuthChangePasswordPayload) -> None:
+        for record in self.usersByEmail.values():
+            if record["user"].id == userId:
+                if record["password"] != payload.currentPassword:
+                    raise ValueError("Current password is incorrect.")
+                record["password"] = payload.newPassword
+                return
+        raise ValueError("Current password is incorrect.")
+
     def createSession(self, user: server_module.SessionUser) -> FakeSession:
         token = f"token-{self._nextSessionId}"
         self._nextSessionId += 1
@@ -168,6 +177,60 @@ def test_login_allows_existing_user_to_access_tasks(client):
 
     tasksResponse = client.get("/api/tasks")
     assert tasksResponse.status_code == 200
+
+
+def test_change_password_updates_login_credentials(client):
+    register(client)
+
+    changeResponse = client.post(
+        "/api/auth/change-password",
+        json={
+            "currentPassword": "strongpass123",
+            "newPassword": "newstrongpass456",
+            "confirmPassword": "newstrongpass456",
+        },
+    )
+
+    assert changeResponse.status_code == 200
+    assert changeResponse.get_json()["message"] == "Password updated successfully."
+
+    logoutResponse = client.post("/api/auth/logout")
+    assert logoutResponse.status_code == 200
+
+    oldLoginResponse = client.post(
+        "/api/auth/login",
+        json={
+            "email": "glenndel@example.com",
+            "password": "strongpass123",
+        },
+    )
+    assert oldLoginResponse.status_code == 401
+    assert oldLoginResponse.get_json()["error"] == "Invalid email or password."
+
+    newLoginResponse = client.post(
+        "/api/auth/login",
+        json={
+            "email": "glenndel@example.com",
+            "password": "newstrongpass456",
+        },
+    )
+    assert newLoginResponse.status_code == 200
+
+
+def test_change_password_rejects_wrong_current_password(client):
+    register(client)
+
+    response = client.post(
+        "/api/auth/change-password",
+        json={
+            "currentPassword": "wrongpass123",
+            "newPassword": "newstrongpass456",
+            "confirmPassword": "newstrongpass456",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Current password is incorrect."
 
 
 def test_create_task_returns_json_payload(client):

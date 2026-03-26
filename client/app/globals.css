@@ -318,12 +318,14 @@ textarea:focus-visible {
   gap: 0.95rem;
 }
 
-.auth-form label {
+.auth-form label,
+.account-form label {
   display: grid;
   gap: 0.45rem;
 }
 
-.auth-form span {
+.auth-form span,
+.account-form span {
   font-size: 0.92rem;
 }
 
@@ -652,16 +654,60 @@ textarea:focus-visible {
   align-items: center;
 }
 
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(8px);
+}
+
+.dialog-card {
+  width: min(100%, 520px);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(9, 105, 218, 0.05), transparent 160px),
+    var(--panel);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  padding: 1.2rem;
+}
+
+.dialog-card__header h2 {
+  margin: 0;
+}
+
+.dialog-close {
+  min-width: 84px;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+}
+
 .message {
   margin-top: 1rem;
   padding: 0.85rem 0.95rem;
   border-radius: 12px;
 }
 
+.message.success {
+  border: 1px solid rgba(45, 164, 78, 0.2);
+  background: rgba(45, 164, 78, 0.1);
+  color: var(--primary-strong);
+}
+
 .message.error {
   border: 1px solid rgba(207, 34, 46, 0.16);
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.inline-message {
+  margin-top: 0.75rem;
 }
 
 @media (max-width: 1260px) {
@@ -772,6 +818,10 @@ textarea:focus-visible {
   .details-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .dialog-card__header {
+    flex-direction: column;
   }
 
   .details-actions > * {

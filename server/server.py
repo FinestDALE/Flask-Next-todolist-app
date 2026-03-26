@@ -305,6 +305,46 @@ class AuthenticatedSession(BaseModel):
     expiresAt: datetime = Field(validation_alias=AliasChoices("expiresAt", "expires_at"))
 
 
+class AuthChangePasswordPayload(BaseModel):
+    currentPassword: str = Field(validation_alias=AliasChoices("currentPassword", "current_password"))
+    newPassword: str = Field(validation_alias=AliasChoices("newPassword", "new_password"))
+    confirmPassword: str = Field(validation_alias=AliasChoices("confirmPassword", "confirm_password"))
+
+    @field_validator("currentPassword", "newPassword", "confirmPassword", mode="before")
+    @classmethod
+    def normalizePassword(cls, value: object) -> str:
+        return str(value or "")
+
+    @field_validator("currentPassword")
+    @classmethod
+    def validateCurrentPassword(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Current password is required.")
+        return value
+
+    @field_validator("newPassword")
+    @classmethod
+    def validateNewPassword(cls, value: str) -> str:
+        if len(value) < 8:
+            raise ValueError("New password must be at least 8 characters long.")
+        return value
+
+    @field_validator("confirmPassword")
+    @classmethod
+    def validateConfirmPassword(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Please confirm your new password.")
+        return value
+
+    @model_validator(mode="after")
+    def validatePasswordChange(self) -> "AuthChangePasswordPayload":
+        if self.currentPassword == self.newPassword:
+            raise ValueError("New password must be different from your current password.")
+        if self.newPassword != self.confirmPassword:
+            raise ValueError("New password and confirmation do not match.")
+        return self
+
+
 class TaskStore(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
 
@@ -394,6 +434,16 @@ class MongoAuthRepository:
         if not document or not check_password_hash(str(document["passwordHash"]), payload.password):
             raise ValueError("Invalid email or password.")
         return self._documentToUser(document)
+
+    def changePassword(self, userId: str, payload: AuthChangePasswordPayload) -> None:
+        document = self.collections.users.find_one({"_id": userId})
+        if not document or not check_password_hash(str(document["passwordHash"]), payload.currentPassword):
+            raise ValueError("Current password is incorrect.")
+
+        self.collections.users.update_one(
+            {"_id": userId},
+            {"$set": {"passwordHash": generate_password_hash(payload.newPassword)}},
+        )
 
     def createSession(self, user: SessionUser) -> AuthenticatedSession:
         currentTime = nowUtc()
@@ -712,6 +762,24 @@ def logout():
     getServices().auth.deleteSession(token)
     response = jsonify({"ok": True})
     return clearSessionCookie(response)
+
+
+@app.post("/api/auth/change-password")
+def changePassword():
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        changePasswordPayload = AuthChangePasswordPayload.model_validate(payload)
+        getServices().auth.changePassword(session.user.id, changePasswordPayload)
+    except ValidationError as error:
+        return validationErrorResponse(error)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    return jsonify({"ok": True, "message": "Password updated successfully."})
 
 
 @app.get("/api/tasks")
