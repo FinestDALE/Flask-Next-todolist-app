@@ -607,7 +607,7 @@ export default function Home() {
         </article>
         <article className="summary-tile">
           <span>{data.summary.completed}</span>
-          <p>Closed</p>
+          <p>Total task completed</p>
         </article>
         <article className="summary-tile">
           <span>{dueTodayCount}</span>
