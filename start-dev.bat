@@ -51,7 +51,7 @@ start "Flask Server" /D "%SERVER_DIR%" cmd /k "set MONGODB_URI=%MONGODB_URI% && 
 start "Next Client" cmd /k "cd /d ""%CLIENT_DIR%"" && npm run dev"
 
 echo Started Flask and Next.js in separate windows.
-echo Flask API:  http://127.0.0.1:5000
+echo Flask API:  http://localhost:5000
 echo Next app:   http://localhost:3000
 echo MongoDB:    %MONGODB_URI%  ^(%MONGODB_DB%.%MONGODB_COLLECTION%^)
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Task = {
   id: string;
@@ -13,6 +13,13 @@ type Task = {
   dueTime: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
 };
 
 type ApiState = {
@@ -30,15 +37,16 @@ type ApiPayload = ApiState & {
   task?: Task;
 };
 
-type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "dueDate" | "dueTime" | "completed">;
-type FloatingNotice = {
-  kind: "deadline" | "error";
-  title: string;
-  body: string;
-  isExiting: boolean;
+type SessionPayload = {
+  user: User | null;
+  expiresAt?: string;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:5000/api";
+type TaskDraft = Pick<Task, "title" | "notes" | "category" | "priority" | "dueDate" | "dueTime" | "completed">;
+
+type AuthMode = "login" | "register";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:5000/api";
 
 const emptyState: ApiState = {
   tasks: [],
@@ -55,8 +63,6 @@ const emptyDraft: TaskDraft = {
   dueTime: null,
   completed: false,
 };
-
-const NOTIFIED_TASKS_KEY = "mini-todo-deadline-notified";
 
 function createDraft(task: Task | null): TaskDraft {
   if (!task) {
@@ -132,6 +138,7 @@ function relativeDueTone(dateValue: string | null, timeValue: string | null, com
   if (due.getTime() < now.getTime()) {
     return "late";
   }
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
@@ -139,24 +146,8 @@ function relativeDueTone(dateValue: string | null, timeValue: string | null, com
   if (due >= today && due < tomorrow) {
     return "today";
   }
+
   return "upcoming";
-}
-
-function getDueAt(task: Task) {
-  if (!task.dueDate && !task.dueTime) {
-    return null;
-  }
-
-  const baseDate = task.dueDate ? new Date(`${task.dueDate}T00:00:00`) : new Date();
-
-  if (task.dueTime) {
-    const [hours, minutes] = task.dueTime.split(":");
-    baseDate.setHours(Number(hours), Number(minutes), 0, 0);
-  } else {
-    baseDate.setHours(23, 59, 59, 999);
-  }
-
-  return baseDate;
 }
 
 function toLocalDateKey(value: Date) {
@@ -166,8 +157,19 @@ function toLocalDateKey(value: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function deadlineNotificationKey(task: Task) {
-  return `${task.id}:${task.dueDate ?? ""}:${task.dueTime ?? ""}`;
+function getDueAt(task: Task) {
+  if (!task.dueDate && !task.dueTime) {
+    return null;
+  }
+
+  const baseDate = task.dueDate ? new Date(`${task.dueDate}T00:00:00`) : new Date();
+  if (task.dueTime) {
+    const [hours, minutes] = task.dueTime.split(":");
+    baseDate.setHours(Number(hours), Number(minutes), 0, 0);
+  } else {
+    baseDate.setHours(23, 59, 59, 999);
+  }
+  return baseDate;
 }
 
 function isDueToday(task: Task, now: Date) {
@@ -185,23 +187,21 @@ function isDueToday(task: Task, now: Date) {
 
 export default function Home() {
   const [data, setData] = useState<ApiState>(emptyState);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [booting, setBooting] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [authError, setAuthError] = useState("");
   const [filter, setFilter] = useState<"all" | "open" | "done" | "dueToday">("all");
   const [category, setCategory] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
-  const [floatingNotice, setFloatingNotice] = useState<FloatingNotice | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
-    "unsupported"
-  );
-  const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
-  const noticeTimerRef = useRef<number | null>(null);
-  const floatingNoticeRef = useRef<FloatingNotice | null>(null);
+  const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
   const [createForm, setCreateForm] = useState({
     title: "",
     category: "General",
@@ -209,241 +209,138 @@ export default function Home() {
     dueDate: "",
     dueTime: "",
   });
+  const [loginForm, setLoginForm] = useState({
+    email: "",
+    password: "",
+  });
+  const [registerForm, setRegisterForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+  });
+  const noticeRef = useRef<HTMLDivElement | null>(null);
+
+  function isUnauthorizedError(value: unknown) {
+    return typeof value === "object" && value !== null && "status" in value && Number(value.status) === 401;
+  }
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
     });
-    const body = (await response.json()) as T & { error?: string };
+
+    const contentType = response.headers.get("content-type") || "";
+    const rawBody = await response.text();
+    const body = contentType.includes("application/json")
+      ? (JSON.parse(rawBody) as T & { error?: string; user?: User | null })
+      : null;
+
     if (!response.ok) {
-      throw new Error(body.error || "Request failed.");
+      const fallbackMessage = rawBody.trim().startsWith("<")
+        ? "The API returned an HTML error page. Make sure the Flask server is running and restart both apps."
+        : rawBody.trim() || "Request failed.";
+      throw Object.assign(new Error(body?.error || fallbackMessage), { status: response.status, body: body ?? rawBody });
     }
+
+    if (!body) {
+      throw Object.assign(
+        new Error("The API did not return JSON. Make sure the request is hitting the Flask server."),
+        { status: response.status, body: rawBody }
+      );
+    }
+
     return body;
   }
 
-  const dismissFloatingNotice = useCallback(() => {
-    const currentNotice = floatingNoticeRef.current;
-    if (!currentNotice || currentNotice.isExiting) {
-      return;
-    }
-
-    if (noticeTimerRef.current !== null) {
-      window.clearTimeout(noticeTimerRef.current);
-    }
-
-    setFloatingNotice({ ...currentNotice, isExiting: true });
-
-    noticeTimerRef.current = window.setTimeout(() => {
-      setFloatingNotice(null);
-      noticeTimerRef.current = null;
-    }, 220);
-  }, []);
-
-  const showFloatingNotice = useCallback(
-    (kind: "deadline" | "error", title: string, body: string, durationMs = 12000) => {
-      if (noticeTimerRef.current !== null) {
-        window.clearTimeout(noticeTimerRef.current);
-        noticeTimerRef.current = null;
-      }
-
-      setFloatingNotice({ kind, title, body, isExiting: false });
-
-      noticeTimerRef.current = window.setTimeout(() => {
-        dismissFloatingNotice();
-      }, durationMs);
-    },
-    [dismissFloatingNotice]
-  );
-
-  function validateDeadlineInput(dateValue: string | null, timeValue: string | null) {
-    if (!dateValue && !timeValue) {
-      return "";
-    }
-
-    if (!dateValue || !timeValue) {
-      return "Task date is invalid. Please choose both a due date and due time.";
-    }
-
-    const now = new Date();
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-
-    const dueDate = new Date(`${dateValue}T00:00:00`);
-    if (Number.isNaN(dueDate.getTime())) {
-      return "Task date is invalid. Please choose a valid due date and time.";
-    }
-
-    if (dueDate < today) {
-      return "Task date is invalid. Due date cannot be earlier than today.";
-    }
-
-    if (dueDate.getTime() === today.getTime()) {
-      const [hours, minutes] = timeValue.split(":");
-      const dueTimeMinutes = Number(hours) * 60 + Number(minutes);
-      const nowTimeMinutes = now.getHours() * 60 + now.getMinutes();
-
-      if (dueTimeMinutes < nowTimeMinutes) {
-        return "Task time is invalid. Due time cannot be earlier than the current time.";
-      }
-    }
-
-    return "";
-  }
-
   async function loadTasks() {
-    setLoading(true);
+    setLoadingTasks(true);
     setError("");
     try {
       const next = await request<ApiState>("/tasks");
       setData(next);
       setSelectedId((current) => current || next.tasks[0]?.id || "");
     } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Could not load tasks.");
     } finally {
-      setLoading(false);
+      setLoadingTasks(false);
     }
   }
 
   useEffect(() => {
     void (async () => {
-      setLoading(true);
-      setError("");
       try {
-        const next = await request<ApiState>("/tasks");
-        setData(next);
-        setSelectedId((current) => current || next.tasks[0]?.id || "");
+        let currentUser: User | null = null;
+        try {
+          const session = await request<SessionPayload>("/auth/session");
+          currentUser = session.user;
+          setUser(session.user);
+        } catch (caught) {
+          const status = typeof caught === "object" && caught && "status" in caught ? Number(caught.status) : 0;
+          if (status === 401) {
+            setUser(null);
+          } else {
+            throw caught;
+          }
+        }
+
+        if (currentUser) {
+          setLoadingTasks(true);
+          setError("");
+          try {
+            const next = await request<ApiState>("/tasks");
+            setData(next);
+            setSelectedId(next.tasks[0]?.id || "");
+          } catch (caught) {
+            setError(caught instanceof Error ? caught.message : "Could not load tasks.");
+          } finally {
+            setLoadingTasks(false);
+          }
+        }
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Could not load tasks.");
+        setAuthError(caught instanceof Error ? caught.message : "Could not connect to the server.");
       } finally {
-        setLoading(false);
+        setBooting(false);
       }
     })();
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("mini-todo-theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    const storedTheme = localStorage.getItem("mini-todo-theme");
+    const storedTheme = window.localStorage.getItem("mini-todo-theme");
     if (storedTheme === "dark" || storedTheme === "light") {
       setTheme(storedTheme);
       document.documentElement.dataset.theme = storedTheme;
     }
-
-    if (typeof window !== "undefined") {
-      const storedNotifiedTasks = localStorage.getItem(NOTIFIED_TASKS_KEY);
-      if (storedNotifiedTasks) {
-        try {
-          notifiedTaskKeysRef.current = new Set(JSON.parse(storedNotifiedTasks) as string[]);
-        } catch {
-          notifiedTaskKeysRef.current = new Set();
-        }
-      }
-    }
-
-    if ("Notification" in window) {
-      setNotificationPermission(Notification.permission);
-    }
   }, []);
 
   useEffect(() => {
-    floatingNoticeRef.current = floatingNotice;
-  }, [floatingNotice]);
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("mini-todo-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
     const tickId = window.setInterval(() => setClockTick(Date.now()), 30000);
     return () => window.clearInterval(tickId);
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
+    if (error || authError) {
+      noticeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
-
-    const checkDeadlines = () => {
-      const now = Date.now();
-      const newlyDueTasks = data.tasks.filter((task) => {
-        if (task.completed) {
-          return false;
-        }
-
-        const dueAt = getDueAt(task);
-        if (!dueAt || dueAt.getTime() > now) {
-          return false;
-        }
-
-        const notificationKey = deadlineNotificationKey(task);
-        return !notifiedTaskKeysRef.current.has(notificationKey);
-      });
-
-      if (!newlyDueTasks.length) {
-        return;
-      }
-
-      const nextNotifiedKeys = new Set(notifiedTaskKeysRef.current);
-      for (const task of newlyDueTasks) {
-        const notificationKey = deadlineNotificationKey(task);
-        nextNotifiedKeys.add(notificationKey);
-
-        if ("Notification" in window && Notification.permission === "granted") {
-          new Notification("Task deadline reached", {
-            body: `${task.title} is due now.`,
-          });
-        }
-      }
-
-      notifiedTaskKeysRef.current = nextNotifiedKeys;
-      localStorage.setItem(NOTIFIED_TASKS_KEY, JSON.stringify(Array.from(nextNotifiedKeys)));
-
-      if (newlyDueTasks.length === 1) {
-        showFloatingNotice("deadline", "Deadline reached", `${newlyDueTasks[0].title} is due now.`);
-      } else {
-        showFloatingNotice("deadline", "Multiple deadlines reached", `${newlyDueTasks.length} tasks just reached their deadlines.`);
-      }
-    };
-
-    checkDeadlines();
-    const intervalId = window.setInterval(checkDeadlines, 30000);
-    return () => window.clearInterval(intervalId);
-  }, [data.tasks, showFloatingNotice]);
-
-  useEffect(() => {
-    return () => {
-      if (noticeTimerRef.current !== null) {
-        window.clearTimeout(noticeTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!floatingNotice) {
-      return;
-    }
-
-    document.getElementById("floating-notice")?.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-  }, [floatingNotice]);
-
-  const dueTodayCount = useMemo(() => {
-    const now = new Date(clockTick);
-    return data.tasks.filter((task) => isDueToday(task, now)).length;
-  }, [clockTick, data.tasks]);
+  }, [authError, error]);
 
   const filteredTasks = useMemo(() => {
     const now = new Date(clockTick);
-
     return data.tasks.filter((task) => {
       const matchesFilter =
         filter === "all" ||
@@ -458,29 +355,126 @@ export default function Home() {
   }, [category, clockTick, data.tasks, filter, query]);
 
   const selectedTask = data.tasks.find((task) => task.id === selectedId) || filteredTasks[0] || null;
+  const dueTodayCount = useMemo(() => {
+    const now = new Date(clockTick);
+    return data.tasks.filter((task) => isDueToday(task, now)).length;
+  }, [clockTick, data.tasks]);
+
+  const isDirty = selectedTask ? JSON.stringify(createDraft(selectedTask)) !== JSON.stringify(draft) : false;
 
   useEffect(() => {
     setDraft(createDraft(selectedTask));
   }, [selectedTask]);
 
-  const isDirty = selectedTask
-    ? JSON.stringify(createDraft(selectedTask)) !== JSON.stringify(draft)
-    : false;
+  function resetBoardState() {
+    setData(emptyState);
+    setSelectedId("");
+    setDraft(emptyDraft);
+    setFilter("all");
+    setCategory("all");
+    setQuery("");
+    setError("");
+  }
+
+  function validateDeadlineInput(dateValue: string | null, timeValue: string | null) {
+    if (!dateValue && !timeValue) {
+      return "";
+    }
+
+    if (!dateValue || !timeValue) {
+      return "Please choose both a due date and due time.";
+    }
+
+    const now = new Date();
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    const dueDate = new Date(`${dateValue}T00:00:00`);
+
+    if (Number.isNaN(dueDate.getTime())) {
+      return "Please choose a valid due date and time.";
+    }
+
+    if (dueDate < today) {
+      return "Due date cannot be earlier than today.";
+    }
+
+    if (dueDate.getTime() === today.getTime()) {
+      const [hours, minutes] = timeValue.split(":");
+      const dueMinutes = Number(hours) * 60 + Number(minutes);
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      if (dueMinutes < nowMinutes) {
+        return "Due time cannot be earlier than the current time.";
+      }
+    }
+
+    return "";
+  }
+
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const session = await request<SessionPayload>("/auth/register", {
+        method: "POST",
+        body: JSON.stringify(registerForm),
+      });
+      setUser(session.user);
+      setRegisterForm({ name: "", email: "", password: "" });
+      await loadTasks();
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Could not create your account.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const session = await request<SessionPayload>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(loginForm),
+      });
+      setUser(session.user);
+      setLoginForm((current) => ({ ...current, password: "" }));
+      await loadTasks();
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Could not sign you in.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      await request<{ ok: true }>("/auth/logout", { method: "POST" });
+      setUser(null);
+      resetBoardState();
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Could not sign you out.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
 
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!createForm.title.trim()) {
       setError("Task title is required.");
-      showFloatingNotice("error", "Validation error", "Task title is required.", 10000);
       return;
     }
 
     const deadlineError = validateDeadlineInput(createForm.dueDate || null, createForm.dueTime || null);
     if (deadlineError) {
       setError(deadlineError);
-      showFloatingNotice("error", "Validation error", deadlineError, 10000);
       return;
     }
+
     setSaving(true);
     setError("");
     try {
@@ -496,6 +490,12 @@ export default function Home() {
       setCreateForm((current) => ({ ...current, title: "", dueDate: "", dueTime: "" }));
       setSelectedId(next.task?.id || next.tasks[0]?.id || "");
     } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Could not create task.");
     } finally {
       setSaving(false);
@@ -513,6 +513,12 @@ export default function Home() {
       setData(next);
       setSelectedId(next.task?.id || taskId);
     } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Could not update task.");
     } finally {
       setSaving(false);
@@ -527,7 +533,6 @@ export default function Home() {
     const deadlineError = validateDeadlineInput(draft.dueDate, draft.dueTime);
     if (deadlineError) {
       setError(deadlineError);
-      showFloatingNotice("error", "Validation error", deadlineError, 10000);
       return;
     }
 
@@ -544,6 +549,12 @@ export default function Home() {
       setData(next);
       setSelectedId(next.tasks[0]?.id || "");
     } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Could not delete task.");
     } finally {
       setSaving(false);
@@ -560,116 +571,238 @@ export default function Home() {
       setData(next);
       setSelectedId(next.tasks[0]?.id || "");
     } catch (caught) {
+      if (isUnauthorizedError(caught)) {
+        setUser(null);
+        setAuthError("Your session expired. Please sign in again.");
+        resetBoardState();
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Could not clear completed tasks.");
     } finally {
       setSaving(false);
     }
   }
 
-  async function enableNotifications() {
-    if (!("Notification" in window)) {
-      setNotificationPermission("unsupported");
-      return;
-    }
+  if (booting) {
+    return (
+      <main className="launch-shell">
+        <section className="launch-card">
+          <p className="eyebrow">Mongo-backed productivity workspace</p>
+          <h1>Preparing your planning space</h1>
+          <p className="hero-copy">Checking the current session and waking up the API.</p>
+        </section>
+      </main>
+    );
+  }
 
-    const permission = await Notification.requestPermission();
-    setNotificationPermission(permission);
+  if (!user) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-hero">
+          <p className="eyebrow">Developed by:Glenndel</p>
+          <h1>Plan faster with a calmer workspace.</h1>
+          <p className="hero-copy">
+            Register once, sign in securely, and keep every task attached to your own account.
+          </p>
+          <div className="hero-preview">
+            <div className="hero-preview__header">
+              <span>Your day at a glance</span>
+              <strong>Personal board</strong>
+            </div>
+            <div className="hero-preview__grid">
+              <article>
+                <strong>Capture</strong>
+                <p>Quickly add work with priority and due date.</p>
+              </article>
+              <article>
+                <strong>Focus</strong>
+                <p>Filter by open work, done tasks, or due today.</p>
+              </article>
+              <article>
+                <strong>Own it</strong>
+                <p>Your tasks stay tied to your account in database.</p>
+              </article>
+            </div>
+          </div>
+          <div className="hero-stats">
+            <article>
+              <strong>Secure</strong>
+              <span>Hashed passwords and server sessions.</span>
+            </article>
+            <article>
+              <strong>Focused</strong>
+              <span>Per-user task boards with cleaner defaults.</span>
+            </article>
+            <article>
+              <strong>Presentable</strong>
+              <span>A softer, dashboard-style UI that feels ready to use.</span>
+            </article>
+          </div>
+        </section>
+
+        <section className="auth-card">
+          <div className="auth-card__header">
+            <div>
+              <p className="eyebrow">Welcome back</p>
+              <h2>{authMode === "login" ? "Sign in to continue" : "Create your account"}</h2>
+              <p className="auth-subcopy">
+                {authMode === "login"
+                  ? "Pick up where you left off in your private planning board."
+                  : "Create a secure account and get a starter board immediately."}
+              </p>
+            </div>
+            <button className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+              {theme === "light" ? "Dark" : "Light"}
+            </button>
+          </div>
+
+          <div className="auth-tabs">
+            <button
+              className={authMode === "login" ? "tab-button active" : "tab-button"}
+              onClick={() => setAuthMode("login")}
+              type="button"
+            >
+              Login
+            </button>
+            <button
+              className={authMode === "register" ? "tab-button active" : "tab-button"}
+              onClick={() => setAuthMode("register")}
+              type="button"
+            >
+              Register
+            </button>
+          </div>
+
+          <div ref={noticeRef}>{authError ? <p className="message error">{authError}</p> : null}</div>
+
+          {authMode === "login" ? (
+            <form className="auth-form" onSubmit={handleLogin}>
+              <label>
+                <span>Email</span>
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={loginForm.email}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, email: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  type="password"
+                  placeholder="Enter your password"
+                  value={loginForm.password}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+                />
+              </label>
+              <button className="primary-button" type="submit" disabled={authBusy}>
+                {authBusy ? "Signing in..." : "Sign in"}
+              </button>
+              <p className="auth-footnote">Use the account you created on this device. Sessions stay active for 14 days.</p>
+            </form>
+          ) : (
+            <form className="auth-form" onSubmit={handleRegister}>
+              <label>
+                <span>Full name</span>
+                <input
+                  placeholder="Glenndel"
+                  value={registerForm.name}
+                  onChange={(event) => setRegisterForm((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Email</span>
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={registerForm.email}
+                  onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  type="password"
+                  placeholder="Minimum 8 characters"
+                  value={registerForm.password}
+                  onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))}
+                />
+              </label>
+              <button className="primary-button" type="submit" disabled={authBusy}>
+                {authBusy ? "Creating account..." : "Create account"}
+              </button>
+              <p className="auth-footnote">Passwords are stored as hashes, not plain text, before being saved to MongoDB.</p>
+            </form>
+          )}
+        </section>
+      </main>
+    );
   }
 
   return (
     <main className="page-shell">
       <section className="topbar">
         <div>
-          <p className="eyebrow">developed by: Glenndel</p>
-          <h1>PLAN YOUR DAY BY LISTING IT</h1>
-          <p className="hero-copy">
-            Stay focused. You’ve got this.
-          </p>
+          <p className="eyebrow">Logged in as {user.email}</p>
+          <h1>{user.name.split(" ")[0]}&apos;s task dashboard</h1>
+          <p className="hero-copy">Keep momentum high with one clean board for capture, triage, and delivery.</p>
         </div>
         <div className="topbar-actions">
-          <button className="secondary-button" onClick={() => void loadTasks()} disabled={loading || saving}>
+          <button className="secondary-button" onClick={() => void loadTasks()} disabled={loadingTasks || saving}>
             Refresh
           </button>
           <button className="secondary-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
             {theme === "light" ? "Dark theme" : "Light theme"}
           </button>
+          <button className="secondary-button" onClick={() => void handleLogout()} disabled={authBusy}>
+            Sign out
+          </button>
         </div>
       </section>
 
       <section className="summary-strip">
-        <article className="summary-tile">
+        <article className="summary-tile accent">
+          <p className="summary-label">Total</p>
           <span>{data.summary.total}</span>
-          <p>Total task</p>
+          <p>Total tasks</p>
         </article>
         <article className="summary-tile">
+          <p className="summary-label">In Focus</p>
           <span>{data.summary.open}</span>
           <p>Open</p>
         </article>
         <article className="summary-tile">
+          <p className="summary-label">Progress</p>
           <span>{data.summary.completed}</span>
-          <p>Total task completed</p>
+          <p>Completed</p>
         </article>
         <article className="summary-tile">
+          <p className="summary-label">Today</p>
           <span>{dueTodayCount}</span>
           <p>Due today</p>
         </article>
       </section>
 
-      {floatingNotice ? (
-        <section
-          id="floating-notice"
-          className={`deadline-toast ${floatingNotice.kind === "error" ? "deadline-toast--error" : ""} ${
-            floatingNotice.isExiting ? "deadline-toast--exit" : ""
-          }`}
-          role="alert"
-          aria-live="assertive"
-        >
-          <div className="deadline-toast__icon" aria-hidden="true">
-            {floatingNotice.kind === "error" ? "×" : "!"}
-          </div>
-          <div className="deadline-toast__body">
-            <p className="deadline-toast__kicker">
-              {floatingNotice.kind === "error" ? "Validation" : "Task alert"}
-            </p>
-            <h2>{floatingNotice.title}</h2>
-            <p>{floatingNotice.body}</p>
-          </div>
-          <div className="deadline-toast__actions">
-            {floatingNotice.kind === "deadline" && notificationPermission === "default" ? (
-              <button className="secondary-button" onClick={() => void enableNotifications()}>
-                Enable alerts
-              </button>
-            ) : null}
-            {floatingNotice.kind === "deadline" ? (
-              <button className="primary-button" onClick={() => setFilter("dueToday")}>
-                Show due today
-              </button>
-            ) : null}
-            <button className="link-button" onClick={dismissFloatingNotice}>
-              Dismiss
-            </button>
-          </div>
-        </section>
-      ) : null}
+      <div ref={noticeRef}>{error ? <p className="message error">{error}</p> : null}</div>
 
       <section className="workspace-grid">
-        <aside className="sidebar-panel">
+        <aside className="sidebar-panel workspace-sidebar">
           <form className="panel create-panel" onSubmit={createTask}>
             <div className="panel-heading">
               <div>
-                <h2>New task</h2>
-                <p>Quick capture with cleaner defaults.</p>
+                <h2>Quick capture</h2>
+                <p>Create new work without leaving the board.</p>
               </div>
               <span className="status-pill">{saving ? "Saving" : "Ready"}</span>
             </div>
             <input
-              placeholder="Title"
+              placeholder="What needs to get done?"
               value={createForm.title}
               onChange={(event) => setCreateForm((current) => ({ ...current, title: event.target.value }))}
             />
             <div className="split-row">
               <input
-                placeholder="Label"
+                placeholder="Category"
                 value={createForm.category}
                 onChange={(event) => setCreateForm((current) => ({ ...current, category: event.target.value }))}
               />
@@ -684,16 +817,18 @@ export default function Home() {
                 <option value="high">High</option>
               </select>
             </div>
-            <input
-              type="date"
-              value={createForm.dueDate}
-              onChange={(event) => setCreateForm((current) => ({ ...current, dueDate: event.target.value }))}
-            />
-            <input
-              type="time"
-              value={createForm.dueTime}
-              onChange={(event) => setCreateForm((current) => ({ ...current, dueTime: event.target.value }))}
-            />
+            <div className="split-row">
+              <input
+                type="date"
+                value={createForm.dueDate}
+                onChange={(event) => setCreateForm((current) => ({ ...current, dueDate: event.target.value }))}
+              />
+              <input
+                type="time"
+                value={createForm.dueTime}
+                onChange={(event) => setCreateForm((current) => ({ ...current, dueTime: event.target.value }))}
+              />
+            </div>
             <button type="submit" className="primary-button" disabled={saving}>
               Create task
             </button>
@@ -703,7 +838,7 @@ export default function Home() {
             <div className="panel-heading">
               <div>
                 <h2>Filters</h2>
-                <p>Trim the list to what matters now.</p>
+                <p>Focus the board on what matters right now.</p>
               </div>
               <button
                 className="link-button"
@@ -725,7 +860,7 @@ export default function Home() {
                 Open
               </button>
               <button className={filter === "done" ? "tab-button active" : "tab-button"} onClick={() => setFilter("done")}>
-                Closed
+                Done
               </button>
               <button
                 className={filter === "dueToday" ? "tab-button active" : "tab-button"}
@@ -735,7 +870,7 @@ export default function Home() {
               </button>
             </div>
             <select value={category} onChange={(event) => setCategory(event.target.value)}>
-              <option value="all">All labels</option>
+              <option value="all">All categories</option>
               {data.categories.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -748,17 +883,17 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="panel list-panel">
+        <section className="panel list-panel workspace-main">
           <div className="panel-heading list-heading">
             <div>
-              <h2>Task list</h2>
+              <h2>Active board</h2>
               <p>{filteredTasks.length} visible items</p>
             </div>
-            <span className="status-pill subtle">{loading ? "Syncing" : "Live"}</span>
+            <span className="status-pill subtle">{loadingTasks ? "Syncing" : "Live"}</span>
           </div>
 
-          {loading ? <p className="empty-copy">Loading tasks...</p> : null}
-          {!loading && !filteredTasks.length ? <p className="empty-copy">No tasks match the current filter set.</p> : null}
+          {loadingTasks ? <p className="empty-copy">Loading tasks...</p> : null}
+          {!loadingTasks && !filteredTasks.length ? <p className="empty-copy">No tasks match the current filters.</p> : null}
 
           <div className="task-list">
             {filteredTasks.map((task) => (
@@ -799,79 +934,98 @@ export default function Home() {
           </div>
         </section>
 
-        <aside className="panel details-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Details</h2>
-              <p>{selectedTask ? "Edit locally, then save once." : "Select a task to inspect it here."}</p>
-            </div>
-            <span className={isDirty ? "status-pill dirty" : "status-pill subtle"}>{isDirty ? "Unsaved" : "Saved"}</span>
-          </div>
-
-          {selectedTask ? (
-            <div className="details-form">
-              <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-              <textarea
-                rows={7}
-                value={draft.notes}
-                placeholder="Add notes"
-                onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
-              />
-              <div className="split-row">
-                <input
-                  value={draft.category}
-                  onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
-                />
-                <select
-                  value={draft.priority}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, priority: event.target.value as Task["priority"] }))
-                  }
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
+        <aside className="details-panel workspace-details">
+          <section className="panel details-panel__editor">
+            <div className="panel-heading">
+              <div>
+                <h2>Task details</h2>
+                <p>{selectedTask ? "Edit everything here, then save once." : "Pick a task to inspect and update it."}</p>
               </div>
-              <input
-                type="date"
-                value={draft.dueDate ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, dueDate: event.target.value || null }))
-                }
-              />
-              <input
-                type="time"
-                value={draft.dueTime ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, dueTime: event.target.value || null }))
-                }
-              />
-              <label className="checkline">
-                <input
-                  type="checkbox"
-                  checked={draft.completed}
-                  onChange={(event) => setDraft((current) => ({ ...current, completed: event.target.checked }))}
+              <span className={isDirty ? "status-pill dirty" : "status-pill subtle"}>{isDirty ? "Unsaved" : "Saved"}</span>
+            </div>
+
+            {selectedTask ? (
+              <div className="details-form">
+                <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+                <textarea
+                  rows={8}
+                  value={draft.notes}
+                  placeholder="Add notes, context, or acceptance criteria"
+                  onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
                 />
-                Mark task as completed
-              </label>
-              <div className="details-actions">
-                <button className="primary-button" onClick={() => void saveSelectedTask()} disabled={!isDirty || saving}>
-                  Save changes
-                </button>
-                <button className="secondary-button" onClick={() => setDraft(createDraft(selectedTask))} disabled={!isDirty || saving}>
-                  Reset draft
-                </button>
-                <button className="danger-button" onClick={() => void removeTask(selectedTask.id)} disabled={saving}>
-                  Delete
-                </button>
+                <div className="split-row">
+                  <input
+                    value={draft.category}
+                    onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
+                  />
+                  <select
+                    value={draft.priority}
+                    onChange={(event) => setDraft((current) => ({ ...current, priority: event.target.value as Task["priority"] }))}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div className="split-row">
+                  <input
+                    type="date"
+                    value={draft.dueDate ?? ""}
+                    onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value || null }))}
+                  />
+                  <input
+                    type="time"
+                    value={draft.dueTime ?? ""}
+                    onChange={(event) => setDraft((current) => ({ ...current, dueTime: event.target.value || null }))}
+                  />
+                </div>
+                <label className="checkline">
+                  <input
+                    type="checkbox"
+                    checked={draft.completed}
+                    onChange={(event) => setDraft((current) => ({ ...current, completed: event.target.checked }))}
+                  />
+                  Mark task as completed
+                </label>
+                <div className="details-actions">
+                  <button className="primary-button" onClick={() => void saveSelectedTask()} disabled={!isDirty || saving}>
+                    Save changes
+                  </button>
+                  <button className="secondary-button" onClick={() => setDraft(createDraft(selectedTask))} disabled={!isDirty || saving}>
+                    Reset
+                  </button>
+                  <button className="danger-button" onClick={() => void removeTask(selectedTask.id)} disabled={saving}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="empty-copy">Pick a task from the list to edit it here.</p>
+            )}
+          </section>
+
+          <section className="panel details-panel__summary">
+            <div className="panel-heading compact">
+              <div>
+                <h2>Board snapshot</h2>
+                <p>A quick status check for your current workspace.</p>
               </div>
             </div>
-          ) : (
-            <p className="empty-copy">Pick a task from the list to edit it here.</p>
-          )}
-
-          {error ? <p className="message error">{error}</p> : null}
+            <div className="mini-stats">
+              <article className="mini-stats__tile">
+                <strong>{data.summary.open}</strong>
+                <span>Open items</span>
+              </article>
+              <article className="mini-stats__tile">
+                <strong>{data.summary.completed}</strong>
+                <span>Completed</span>
+              </article>
+              <article className="mini-stats__tile">
+                <strong>{dueTodayCount}</strong>
+                <span>Due today</span>
+              </article>
+            </div>
+          </section>
         </aside>
       </section>
     </main>

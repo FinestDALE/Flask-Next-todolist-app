@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Task Board",
-  description: "A cleaner Flask and Next.js task board with validated models and a GitHub-inspired UI.",
+  title: "TaskFlow Auth Board",
+  description: "A Flask and Next.js task board with MongoDB-backed authentication and a polished user dashboard.",
 };
 
 export default function RootLayout({

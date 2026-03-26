@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import os
+import secrets
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
-from datetime import date, datetime, time, timezone
-from typing import Literal, Protocol
+from typing import Literal
 from uuid import uuid4
 
 from flask import Flask, jsonify, make_response, request
-from pymongo import MongoClient
+from werkzeug.exceptions import HTTPException
+from pymongo import ASCENDING, MongoClient
+from pymongo.collection import Collection
+from pymongo.errors import DuplicateKeyError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 
@@ -23,7 +29,11 @@ defaultCategory = "General"
 defaultPriority = "medium"
 defaultMongoUri = "mongodb://127.0.0.1:27017"
 defaultMongoDb = "todo_app"
-defaultMongoCollection = "tasks"
+defaultTaskCollection = "tasks"
+defaultUserCollection = "users"
+defaultSessionCollection = "sessions"
+sessionCookieName = "todo_session"
+sessionDurationDays = 14
 
 Priority = Literal["low", "medium", "high"]
 
@@ -34,6 +44,12 @@ def nowUtc() -> datetime:
 
 def nowIso() -> str:
     return nowUtc().isoformat()
+
+
+def ensureUtcAwareDateTime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def normalizeTextValue(value: object, *, allowNone: bool = False) -> str | None:
@@ -90,12 +106,8 @@ def validateDueDateTime(dueDate: date | None, dueTime: time | None) -> tuple[dat
     return dueDate, dueTime
 
 
-class TaskRepository(Protocol):
-    def loadStore(self) -> "TaskStore":
-        ...
-
-    def saveStore(self, store: "TaskStore") -> None:
-        ...
+def normalizeEmailValue(value: object) -> str:
+    return str(value or "").strip().lower()
 
 
 class TaskBase(BaseModel):
@@ -112,7 +124,7 @@ class TaskBase(BaseModel):
     @field_validator("title", "notes", "category", mode="before")
     @classmethod
     def normalizeText(cls, value: object) -> str:
-        return normalizeTextValue(value)
+        return normalizeTextValue(value) or ""
 
     @field_validator("priority", mode="before")
     @classmethod
@@ -209,6 +221,90 @@ class TaskUpdate(BaseModel):
         return self
 
 
+class SessionUser(BaseModel):
+    id: str
+    name: str
+    email: str
+    createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
+
+
+class AuthRegisterPayload(BaseModel):
+    name: str
+    email: str
+    password: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalizeName(cls, value: object) -> str:
+        return normalizeTextValue(value) or ""
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalizeEmail(cls, value: object) -> str:
+        return normalizeEmailValue(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalizePassword(cls, value: object) -> str:
+        return str(value or "")
+
+    @field_validator("name")
+    @classmethod
+    def validateName(cls, value: str) -> str:
+        if len(value) < 2:
+            raise ValueError("Name must be at least 2 characters long.")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def validateEmail(cls, value: str) -> str:
+        if "@" not in value or "." not in value.split("@")[-1]:
+            raise ValueError("Please provide a valid email address.")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def validatePassword(cls, value: str) -> str:
+        if len(value) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        return value
+
+
+class AuthLoginPayload(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalizeEmail(cls, value: object) -> str:
+        return normalizeEmailValue(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def normalizePassword(cls, value: object) -> str:
+        return str(value or "")
+
+    @field_validator("email")
+    @classmethod
+    def validateEmail(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Email is required.")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def validatePassword(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Password is required.")
+        return value
+
+
+class AuthenticatedSession(BaseModel):
+    token: str
+    user: SessionUser
+    expiresAt: datetime = Field(validation_alias=AliasChoices("expiresAt", "expires_at"))
+
+
 class TaskStore(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
 
@@ -219,10 +315,10 @@ def defaultStore() -> TaskStore:
         tasks=[
             Task(
                 id=str(uuid4()),
-                title="Plan the week",
-                notes="Capture the top three priorities.",
+                title="Welcome to your workspace",
+                notes="Create your first task or adjust this starter item.",
                 completed=False,
-                category="Personal",
+                category="Getting Started",
                 priority="high",
                 dueDate=today,
                 dueTime=time(hour=9, minute=0),
@@ -231,10 +327,10 @@ def defaultStore() -> TaskStore:
             ),
             Task(
                 id=str(uuid4()),
-                title="Ship the landing page",
-                notes="Polish the final responsive pass.",
+                title="Review your next priority",
+                notes="Use categories and due dates to keep the board tidy.",
                 completed=False,
-                category="Work",
+                category="Planning",
                 priority="medium",
                 dueDate=None,
                 dueTime=None,
@@ -245,65 +341,194 @@ def defaultStore() -> TaskStore:
     )
 
 
-class MongoTaskRepository:
-    def __init__(self, uri: str, databaseName: str, collectionName: str) -> None:
-        self.client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+@dataclass(frozen=True)
+class MongoCollections:
+    users: Collection
+    sessions: Collection
+    tasks: Collection
+
+
+class MongoDatabase:
+    def __init__(self, uri: str, databaseName: str, userCollection: str, sessionCollection: str, taskCollection: str) -> None:
+        self.client = MongoClient(uri, serverSelectionTimeoutMS=3000, tz_aware=True)
         self.client.admin.command("ping")
-        self.collection = self.client[databaseName][collectionName]
+        database = self.client[databaseName]
+        self.collections = MongoCollections(
+            users=database[userCollection],
+            sessions=database[sessionCollection],
+            tasks=database[taskCollection],
+        )
+        self._ensureIndexes()
 
-    def loadStore(self) -> TaskStore:
-        tasks = [self._documentToTask(document) for document in self.collection.find({})]
-        if tasks:
-            return TaskStore(tasks=tasks)
+    def _ensureIndexes(self) -> None:
+        self.collections.users.create_index([("email", ASCENDING)], unique=True)
+        self.collections.sessions.create_index([("token", ASCENDING)], unique=True)
+        self.collections.sessions.create_index([("expiresAt", ASCENDING)], expireAfterSeconds=0)
+        self.collections.tasks.create_index([("ownerId", ASCENDING), ("createdAt", ASCENDING)])
 
-        store = defaultStore()
-        self.saveStore(store)
-        return store
 
-    def saveStore(self, store: TaskStore) -> None:
-        taskIds = [task.id for task in store.tasks]
+class MongoAuthRepository:
+    def __init__(self, database: MongoDatabase) -> None:
+        self.collections = database.collections
 
-        # Upsert first, then prune removed tasks. This keeps writes simple
-        # without forcing route handlers to care about database specifics.
-        for task in store.tasks:
-            document = self._taskToDocument(task)
-            self.collection.replace_one({"_id": document["_id"]}, document, upsert=True)
+    def createUser(self, payload: AuthRegisterPayload) -> SessionUser:
+        currentTime = nowUtc()
+        userId = str(uuid4())
+        document = {
+            "_id": userId,
+            "name": payload.name,
+            "email": payload.email,
+            "passwordHash": generate_password_hash(payload.password),
+            "createdAt": currentTime,
+        }
 
-        if taskIds:
-            self.collection.delete_many({"_id": {"$nin": taskIds}})
-        else:
-            self.collection.delete_many({})
+        try:
+            self.collections.users.insert_one(document)
+        except DuplicateKeyError as error:
+            raise ValueError("An account with that email already exists.") from error
+
+        return self._documentToUser(document)
+
+    def authenticateUser(self, payload: AuthLoginPayload) -> SessionUser:
+        document = self.collections.users.find_one({"email": payload.email})
+        if not document or not check_password_hash(str(document["passwordHash"]), payload.password):
+            raise ValueError("Invalid email or password.")
+        return self._documentToUser(document)
+
+    def createSession(self, user: SessionUser) -> AuthenticatedSession:
+        currentTime = nowUtc()
+        token = secrets.token_urlsafe(32)
+        expiresAt = currentTime + timedelta(days=sessionDurationDays)
+        document = {
+            "_id": str(uuid4()),
+            "token": token,
+            "userId": user.id,
+            "createdAt": currentTime,
+            "expiresAt": expiresAt,
+        }
+        self.collections.sessions.insert_one(document)
+        return AuthenticatedSession(token=token, user=user, expiresAt=expiresAt)
+
+    def getSession(self, token: str) -> AuthenticatedSession | None:
+        if not token:
+            return None
+
+        document = self.collections.sessions.find_one({"token": token})
+        if not document:
+            return None
+
+        expiresAt = document.get("expiresAt")
+        if not isinstance(expiresAt, datetime):
+            self.collections.sessions.delete_one({"_id": document["_id"]})
+            return None
+
+        normalizedExpiresAt = ensureUtcAwareDateTime(expiresAt)
+        if normalizedExpiresAt <= nowUtc():
+            self.collections.sessions.delete_one({"_id": document["_id"]})
+            return None
+
+        userDocument = self.collections.users.find_one({"_id": document["userId"]})
+        if not userDocument:
+            self.collections.sessions.delete_one({"_id": document["_id"]})
+            return None
+
+        return AuthenticatedSession(
+            token=str(document["token"]),
+            user=self._documentToUser(userDocument),
+            expiresAt=normalizedExpiresAt,
+        )
+
+    def deleteSession(self, token: str) -> None:
+        if token:
+            self.collections.sessions.delete_one({"token": token})
+
+    def deleteUser(self, userId: str) -> None:
+        if userId:
+            self.collections.users.delete_one({"_id": userId})
+            self.collections.sessions.delete_many({"userId": userId})
 
     @staticmethod
-    def _taskToDocument(task: Task) -> dict[str, object]:
+    def _documentToUser(document: dict[str, object]) -> SessionUser:
+        createdAt = document.get("createdAt")
+        return SessionUser.model_validate(
+            {
+                "id": str(document["_id"]),
+                "name": document["name"],
+                "email": document["email"],
+                "createdAt": ensureUtcAwareDateTime(createdAt) if isinstance(createdAt, datetime) else createdAt,
+            }
+        )
+
+
+class MongoTaskRepository:
+    def __init__(self, database: MongoDatabase) -> None:
+        self.collection = database.collections.tasks
+
+    def loadStore(self, userId: str) -> TaskStore:
+        tasks = [self._documentToTask(document) for document in self.collection.find({"ownerId": userId})]
+        return TaskStore(tasks=tasks)
+
+    def saveStore(self, userId: str, store: TaskStore) -> None:
+        taskIds = [task.id for task in store.tasks]
+
+        for task in store.tasks:
+            document = self._taskToDocument(userId, task)
+            self.collection.replace_one({"_id": document["_id"], "ownerId": userId}, document, upsert=True)
+
+        if taskIds:
+            self.collection.delete_many({"ownerId": userId, "_id": {"$nin": taskIds}})
+        else:
+            self.collection.delete_many({"ownerId": userId})
+
+    @staticmethod
+    def _taskToDocument(userId: str, task: Task) -> dict[str, object]:
         document = task.model_dump(mode="json")
         document["_id"] = task.id
+        document["ownerId"] = userId
         return document
 
     @staticmethod
     def _documentToTask(document: dict[str, object]) -> Task:
-        taskData = {key: value for key, value in document.items() if key != "_id"}
+        taskData = {key: value for key, value in document.items() if key not in {"_id", "ownerId"}}
+        for fieldName in ("createdAt", "updatedAt"):
+            fieldValue = taskData.get(fieldName)
+            if isinstance(fieldValue, datetime):
+                taskData[fieldName] = ensureUtcAwareDateTime(fieldValue)
         taskData.setdefault("id", str(document["_id"]))
         return Task.model_validate(taskData)
 
 
+class ApplicationServices:
+    def __init__(self, authRepository: MongoAuthRepository, taskRepository: MongoTaskRepository) -> None:
+        self.auth = authRepository
+        self.tasks = taskRepository
+
+
 @lru_cache(maxsize=1)
-def getRepository() -> TaskRepository:
+def getServices() -> ApplicationServices:
     mongoUri = os.getenv("MONGODB_URI", defaultMongoUri).strip() or defaultMongoUri
     mongoDbName = os.getenv("MONGODB_DB", defaultMongoDb).strip() or defaultMongoDb
-    mongoCollectionName = os.getenv("MONGODB_COLLECTION", defaultMongoCollection).strip() or defaultMongoCollection
+    taskCollectionName = os.getenv("MONGODB_COLLECTION", defaultTaskCollection).strip() or defaultTaskCollection
+    userCollectionName = os.getenv("MONGODB_USERS_COLLECTION", defaultUserCollection).strip() or defaultUserCollection
+    sessionCollectionName = os.getenv("MONGODB_SESSIONS_COLLECTION", defaultSessionCollection).strip() or defaultSessionCollection
 
-    repository = MongoTaskRepository(mongoUri, mongoDbName, mongoCollectionName)
-    app.logger.info("Using MongoDB task store.")
-    return repository
+    database = MongoDatabase(
+        mongoUri,
+        mongoDbName,
+        userCollectionName,
+        sessionCollectionName,
+        taskCollectionName,
+    )
+    app.logger.info("Using MongoDB for auth and task storage.")
+    return ApplicationServices(MongoAuthRepository(database), MongoTaskRepository(database))
 
 
-def ensureStore() -> TaskStore:
-    return getRepository().loadStore()
+def ensureStore(userId: str) -> TaskStore:
+    return getServices().tasks.loadStore(userId)
 
 
-def saveStore(store: TaskStore) -> None:
-    getRepository().saveStore(store)
+def saveStore(userId: str, store: TaskStore) -> None:
+    getServices().tasks.saveStore(userId, store)
 
 
 def sortTasks(tasks: list[Task]) -> list[Task]:
@@ -322,7 +547,7 @@ def buildSummary(tasks: list[Task]) -> dict[str, int]:
     }
 
 
-def responsePayload(store: TaskStore) -> dict:
+def responsePayload(store: TaskStore) -> dict[str, object]:
     tasks = sortTasks(store.tasks)
     categories = sorted({task.category for task in tasks})
     return {
@@ -355,6 +580,60 @@ def applyTaskUpdates(current: Task, updates: TaskUpdate) -> Task:
     return Task.model_validate(merged)
 
 
+def sessionPayload(session: AuthenticatedSession) -> dict[str, object]:
+    return {
+        "user": session.user.model_dump(mode="json"),
+        "expiresAt": session.expiresAt.isoformat(),
+    }
+
+
+def buildSessionResponse(session: AuthenticatedSession, statusCode: int = 200):
+    response = jsonify(sessionPayload(session))
+    response.status_code = statusCode
+    response.set_cookie(
+        sessionCookieName,
+        session.token,
+        httponly=True,
+        samesite="Lax",
+        secure=False,
+        max_age=sessionDurationDays * 24 * 60 * 60,
+    )
+    return response
+
+
+def clearSessionCookie(response):
+    response.set_cookie(
+        sessionCookieName,
+        "",
+        httponly=True,
+        samesite="Lax",
+        secure=False,
+        expires=0,
+        max_age=0,
+    )
+    return response
+
+
+def currentSession() -> AuthenticatedSession | None:
+    token = request.cookies.get(sessionCookieName, "")
+    return getServices().auth.getSession(token)
+
+
+def requireSession():
+    session = currentSession()
+    if session is None:
+        return None, (jsonify({"error": "Authentication required."}), 401)
+    return session, None
+
+
+@app.errorhandler(Exception)
+def handleUnexpectedError(error: Exception):
+    if isinstance(error, HTTPException):
+        return jsonify({"error": error.description}), error.code
+    app.logger.exception("Unhandled application error: %s", error)
+    return jsonify({"error": "Something went wrong on the server. Please try again."}), 500
+
+
 @app.after_request
 def addCorsHeaders(response):
     origin = request.headers.get("Origin", "")
@@ -362,6 +641,7 @@ def addCorsHeaders(response):
         response.headers["Access-Control-Allow-Origin"] = origin
     else:
         response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return response
@@ -379,14 +659,76 @@ def health():
     return jsonify({"status": "ok", "time": nowIso()})
 
 
+@app.get("/api/auth/session")
+def getSession():
+    session = currentSession()
+    if session is None:
+        return jsonify({"user": None}), 401
+    return jsonify(sessionPayload(session))
+
+
+@app.post("/api/auth/register")
+def register():
+    payload = request.get_json(silent=True) or {}
+    user = None
+    try:
+        registerPayload = AuthRegisterPayload.model_validate(payload)
+        user = getServices().auth.createUser(registerPayload)
+    except ValidationError as error:
+        return validationErrorResponse(error)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+
+    try:
+        saveStore(user.id, defaultStore())
+        session = getServices().auth.createSession(user)
+    except Exception:
+        if user is not None:
+            getServices().auth.deleteUser(user.id)
+        app.logger.exception("Failed to finish registration setup.")
+        return jsonify({"error": "Could not finish account setup. Please try again."}), 500
+
+    return buildSessionResponse(session, 201)
+
+
+@app.post("/api/auth/login")
+def login():
+    payload = request.get_json(silent=True) or {}
+    try:
+        loginPayload = AuthLoginPayload.model_validate(payload)
+        user = getServices().auth.authenticateUser(loginPayload)
+        session = getServices().auth.createSession(user)
+    except ValidationError as error:
+        return validationErrorResponse(error)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 401
+
+    return buildSessionResponse(session)
+
+
+@app.post("/api/auth/logout")
+def logout():
+    token = request.cookies.get(sessionCookieName, "")
+    getServices().auth.deleteSession(token)
+    response = jsonify({"ok": True})
+    return clearSessionCookie(response)
+
+
 @app.get("/api/tasks")
 def getTasks():
-    return jsonify(responsePayload(ensureStore()))
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+    return jsonify(responsePayload(ensureStore(session.user.id)))
 
 
 @app.post("/api/tasks")
 def createTask():
-    store = ensureStore()
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+
+    store = ensureStore(session.user.id)
     payload = request.get_json(silent=True) or {}
     try:
         newTask = createTaskRecord(TaskCreate.model_validate(payload))
@@ -394,13 +736,17 @@ def createTask():
         return validationErrorResponse(error)
 
     store.tasks.append(newTask)
-    saveStore(store)
+    saveStore(session.user.id, store)
     return jsonify({"task": newTask.model_dump(mode="json"), **responsePayload(store)}), 201
 
 
 @app.patch("/api/tasks/<taskId>")
 def updateTask(taskId: str):
-    store = ensureStore()
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+
+    store = ensureStore(session.user.id)
     payload = request.get_json(silent=True) or {}
 
     try:
@@ -412,7 +758,7 @@ def updateTask(taskId: str):
         if task.id == taskId:
             updated = applyTaskUpdates(task, updates)
             store.tasks[index] = updated
-            saveStore(store)
+            saveStore(session.user.id, store)
             return jsonify({"task": updated.model_dump(mode="json"), **responsePayload(store)})
 
     return jsonify({"error": "Task not found."}), 404
@@ -420,21 +766,29 @@ def updateTask(taskId: str):
 
 @app.delete("/api/tasks/<taskId>")
 def deleteTask(taskId: str):
-    store = ensureStore()
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+
+    store = ensureStore(session.user.id)
     nextTasks = [task for task in store.tasks if task.id != taskId]
     if len(nextTasks) == len(store.tasks):
         return jsonify({"error": "Task not found."}), 404
 
     store.tasks = nextTasks
-    saveStore(store)
+    saveStore(session.user.id, store)
     return jsonify(responsePayload(store))
 
 
 @app.delete("/api/tasks")
 def clearCompleted():
-    store = ensureStore()
+    session, errorResponse = requireSession()
+    if errorResponse:
+        return errorResponse
+
+    store = ensureStore(session.user.id)
     store.tasks = [task for task in store.tasks if not task.completed]
-    saveStore(store)
+    saveStore(session.user.id, store)
     return jsonify(responsePayload(store))
 
 
