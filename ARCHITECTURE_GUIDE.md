@@ -412,10 +412,7 @@ That is a good pattern and should be kept.
 ```powershell
 cd server
 py -3 -m pip install -r requirements.txt
-$env:MONGODB_URI="mongodb://127.0.0.1:27017"
-$env:MONGODB_DB="todo_app"
-$env:MONGODB_COLLECTION="tasks"
-py -3 -m flask --app server.py run
+
 ```
 
 ### Frontend
@@ -443,4 +440,3 @@ Object defines the app language
 server.py only starts the app
 ```
 
-That is the architecture base for this project.

@@ -309,6 +309,23 @@ textarea:focus-visible {
   flex-wrap: wrap;
 }
 
+.filter-tab-row {
+  gap: 0.95rem;
+}
+
+.filters-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.filters-panel .tab-button,
+.filters-panel input,
+.filters-panel select,
+.filters-panel .secondary-button,
+.filters-panel .link-button {
+  margin-block: 0.25rem;
+}
+
 .auth-form,
 .create-panel,
 .details-form,

@@ -927,7 +927,7 @@ export default function Home() {
             </button>
           </form>
 
-          <div className="panel">
+          <div className="panel filters-panel">
             <div className="panel-heading">
               <div>
                 <h2>Filters</h2>
@@ -945,7 +945,7 @@ export default function Home() {
               </button>
             </div>
             <input placeholder="Search tasks" value={query} onChange={(event) => setQuery(event.target.value)} />
-            <div className="tab-row">
+            <div className="tab-row filter-tab-row">
               <button className={filter === "all" ? "tab-button active" : "tab-button"} onClick={() => setFilter("all")}>
                 All
               </button>

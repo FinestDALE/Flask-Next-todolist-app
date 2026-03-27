@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 from datetime import datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 from uuid import uuid4
 
 from flask import jsonify, request
@@ -12,6 +14,10 @@ from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 from werkzeug.security import check_password_hash, generate_password_hash
+
+SERVER_DIR = Path(__file__).resolve().parent
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
 
 from Object import (
     AuthChangePasswordPayload,
