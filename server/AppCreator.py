@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+import sys
 
-from flask import Flask, jsonify, make_response, request
-from werkzeug.exceptions import HTTPException
+from flask import Flask
+from flask_cors import CORS
 
 SERVER_DIR = Path(__file__).resolve().parent
 if str(SERVER_DIR) not in sys.path:
@@ -15,42 +15,63 @@ from Object import allowedDevOrigins
 
 
 class AppCreator:
-    def __init__(self, apiRequests: ApiRequests | None = None) -> None:
-        self.apiRequests = apiRequests or ApiRequests()
+    """Builds the Flask app and can generate the bootstrap App.py file."""
+
+    def __init__(self, apiRequests: ApiRequests) -> None:
+        self.apiRequests = apiRequests
 
     def create_app(self) -> Flask:
         app = Flask(__name__)
-        self._register_error_handlers(app)
-        self._register_request_hooks(app)
+        app.config["JSON_SORT_KEYS"] = False
+
+        CORS(
+            app,
+            resources={r"/api/*": {"origins": list(allowedDevOrigins)}},
+            supports_credentials=True,
+        )
+
         self.apiRequests.register(app)
         return app
 
-    def _register_error_handlers(self, app: Flask) -> None:
-        @app.errorhandler(Exception)
-        def handleUnexpectedError(error: Exception):
-            if isinstance(error, HTTPException):
-                return jsonify({"error": error.description}), error.code
-            app.logger.exception("Unhandled application error: %s", error)
-            return jsonify({"error": "Something went wrong on the server. Please try again."}), 500
+    def build_app_file_content(self) -> str:
+        return """from __future__ import annotations
 
-    def _register_request_hooks(self, app: Flask) -> None:
-        @app.after_request
-        def addCorsHeaders(response):
-            origin = request.headers.get("Origin", "")
-            response.headers["Access-Control-Allow-Origin"] = (
-                origin if origin in allowedDevOrigins else "http://localhost:3000"
-            )
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
-            return response
+import sys
+from pathlib import Path
 
-        @app.before_request
-        def handleOptions():
-            if request.method == "OPTIONS":
-                return make_response("", 204)
-            return None
+SERVER_DIR = Path(__file__).resolve().parent
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+
+from AppCreator import AppCreator
+from ApiRequest import ApiRequests, getServices
 
 
-def create_app(apiRequests: ApiRequests | None = None) -> Flask:
-    return AppCreator(apiRequests=apiRequests).create_app()
+def create_app():
+    return AppCreator(
+        apiRequests=ApiRequests(services_provider=lambda: getServices())
+    ).create_app()
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+"""
+
+    def generate_app_file(self, output_path: str | Path | None = None) -> Path:
+        target = Path(output_path) if output_path else SERVER_DIR / "App.py"
+        target.write_text(self.build_app_file_content(), encoding="utf-8")
+        return target
+
+    def generateAPI(self, kind: str = "app") -> Path:
+        if kind != "app":
+            raise ValueError('Only "app" generation is supported in this project.')
+        return self.generate_app_file()
+
+
+if __name__ == "__main__":
+    creator = AppCreator(apiRequests=ApiRequests())
+    generated_path = creator.generate_app_file()
+    print(f"Generated {generated_path.name}")
