@@ -12,6 +12,7 @@ from ApiRequest import ApiRequests, getServices
 
 
 def create_app():
+    """Create and configure the Flask application."""
     return AppCreator(
         apiRequests=ApiRequests(services_provider=lambda: getServices())
     ).create_app()
