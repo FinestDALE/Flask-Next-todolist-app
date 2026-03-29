@@ -28,6 +28,24 @@ CORS(
 api_requests = ApiRequests(services_provider=getServices)
 
 
+def build_api_payload(result, success_message=None):
+    if isinstance(result, dict):
+        payload = dict(result)
+    else:
+        payload = {"data": result}
+    if success_message:
+        payload.setdefault("message", success_message)
+    return payload
+
+
+def build_api_response(result, success_message=None):
+    return jsonify(build_api_payload(result, success_message=success_message))
+
+
+def json_error(message, status_code):
+    return jsonify({"error": message}), status_code
+
+
 @app.route('/api/auth/change-password', methods=['POST'])
 def handle_changePassword():
     payload = request.get_json(silent=True) or {}
@@ -36,7 +54,7 @@ def handle_changePassword():
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         currentPassword = payload.get('currentPassword')
@@ -45,23 +63,18 @@ def handle_changePassword():
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.changePassword(userId, currentPassword, newPassword, confirmPassword)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Password updated successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Password updated successfully')
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/tasks', methods=['DELETE'])
@@ -72,29 +85,24 @@ def handle_clearCompleted():
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.clearCompleted(userId)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Completed tasks cleared successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Completed tasks cleared successfully')
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/tasks', methods=['POST'])
@@ -105,7 +113,7 @@ def handle_createTask():
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         title = payload.get('title')
@@ -118,23 +126,18 @@ def handle_createTask():
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.createTask(userId, title, notes, category, priority, dueDate, dueTime, completed)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Task created successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Task created successfully')
         return response, 201
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/tasks/<taskId>', methods=['DELETE'])
@@ -145,29 +148,24 @@ def handle_deleteTask(taskId):
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.deleteTask(userId, taskId)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Task deleted successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Task deleted successfully')
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/auth/session', methods=['GET'])
@@ -179,24 +177,20 @@ def handle_getSession():
         if token:
             session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         result = api_requests.getSession(token)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message=None)
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/tasks', methods=['GET'])
@@ -207,28 +201,24 @@ def handle_getTasks():
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.getTasks(userId)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message=None)
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/health', methods=['GET'])
@@ -238,22 +228,18 @@ def handle_health():
         session = None
         token = request.cookies.get(sessionCookieName, '')
         result = api_requests.health()
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message=None)
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -265,13 +251,8 @@ def handle_login():
         email = payload.get('email')
         password = payload.get('password')
         result = api_requests.login(email, password)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Login successful')
-        response = jsonify(response_data)
-        token_value = response_data.get('token', '')
+        response = build_api_response(result, success_message='Login successful')
+        token_value = response.get_json().get('token', '')
         if token_value:
             response.set_cookie(
                 sessionCookieName,
@@ -283,15 +264,15 @@ def handle_login():
             )
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -302,30 +283,25 @@ def handle_logout():
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.logout(userId, token)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Logged out successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Logged out successfully')
         response.delete_cookie(sessionCookieName, httponly=True, samesite='Lax', secure=False)
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -338,13 +314,8 @@ def handle_registerUser():
         email = payload.get('email')
         password = payload.get('password')
         result = api_requests.registerUser(name, email, password)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Registration successful')
-        response = jsonify(response_data)
-        token_value = response_data.get('token', '')
+        response = build_api_response(result, success_message='Registration successful')
+        token_value = response.get_json().get('token', '')
         if token_value:
             response.set_cookie(
                 sessionCookieName,
@@ -356,15 +327,15 @@ def handle_registerUser():
             )
         return response, 201
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 @app.route('/api/tasks/<taskId>', methods=['PATCH'])
@@ -375,7 +346,7 @@ def handle_updateTask(taskId):
         token = request.cookies.get(sessionCookieName, '')
         session = api_requests.services.auth.getSession(token)
         if session is None:
-            return jsonify({'error': 'Authentication required.'}), 401
+            return json_error('Authentication required.', 401)
         current_user = session.user.id
         userId = payload.get('userId', current_user)
         title = payload.get('title')
@@ -388,23 +359,18 @@ def handle_updateTask(taskId):
         if userId != current_user:
             raise PermissionError('You do not have permission to access this resource.')
         result = api_requests.updateTask(userId, taskId, title, notes, category, priority, dueDate, dueTime, completed)
-        if isinstance(result, dict):
-            response_data = dict(result)
-        else:
-            response_data = {'data': result}
-        response_data.setdefault('message', 'Task updated successfully')
-        response = jsonify(response_data)
+        response = build_api_response(result, success_message='Task updated successfully')
         return response, 200
     except PermissionError as error:
-        return jsonify({'error': str(error)}), 403
+        return json_error(str(error), 403)
     except ValidationError as error:
-        return jsonify({'error': error.errors()[0]['msg']}), 400
+        return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:
-        return jsonify({'error': str(error)}), 409
+        return json_error(str(error), 409)
     except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return json_error(str(error), 400)
     except Exception as error:
-        return jsonify({'error': str(error)}), 500
+        return json_error(str(error), 500)
 
 
 if __name__ == "__main__":

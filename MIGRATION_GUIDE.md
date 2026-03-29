@@ -58,9 +58,10 @@ Typical new code looks like this:
 ```python
 @route_config(
     httpMethod="POST",
-    jwtRequired=False,
+    authRequired=False,
     createAccessToken=True,
     successMessage="Login successful",
+    routePath="/api/auth/login",
 )
 def login(self, email: str, password: str) -> dict:
     payload = AuthLoginPayload(email=email, password=password)
@@ -100,8 +101,16 @@ Purpose:
 - declare auth requirement
 - declare cookie-setting behavior
 - declare success message
+- optionally declare the generated route path
 
 If a method should become an API endpoint, it should be decorated here.
+
+Preferred metadata names now:
+
+- `authRequired`
+- `routePath`
+
+`jwtRequired` is still supported for backward compatibility, but the app currently uses session-cookie auth and not a literal JWT decorator stack.
 
 ### `server/ApiRequest.py`
 
@@ -133,6 +142,7 @@ Current responsibilities:
 - map methods to route paths
 - emit `server/app.py`
 - centralize JSON parsing, cookie handling, auth checks, and error mapping
+- centralize success payload and JSON error helpers
 
 This file is now the place to change generated HTTP behavior.
 

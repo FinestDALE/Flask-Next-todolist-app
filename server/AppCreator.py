@@ -9,20 +9,6 @@ SERVER_DIR = Path(__file__).resolve().parent
 class AppCreator:
     """Generate the Flask runtime app from ApiRequests route metadata."""
 
-    ROUTE_PATHS = {
-        "health": "/api/health",
-        "getSession": "/api/auth/session",
-        "registerUser": "/api/auth/register",
-        "login": "/api/auth/login",
-        "logout": "/api/auth/logout",
-        "changePassword": "/api/auth/change-password",
-        "getTasks": "/api/tasks",
-        "createTask": "/api/tasks",
-        "updateTask": "/api/tasks/<taskId>",
-        "deleteTask": "/api/tasks/<taskId>",
-        "clearCompleted": "/api/tasks",
-    }
-
     def __init__(self, api_requests_class=None, output_file: str | Path | None = None) -> None:
         if api_requests_class is None:
             from ApiRequest import ApiRequests
@@ -40,8 +26,11 @@ class AppCreator:
                 methods.append((name, inspect.signature(method), route_details))
         return methods
 
-    def _get_route_path(self, method_name: str) -> str:
-        return self.ROUTE_PATHS.get(method_name, f"/api/{method_name}")
+    def _get_route_path(self, method_name: str, route_config: dict[str, object]) -> str:
+        route_path = route_config.get("routePath")
+        if isinstance(route_path, str) and route_path.strip():
+            return route_path.strip()
+        return f"/api/{method_name}"
 
     @staticmethod
     def _extract_parameters(signature: inspect.Signature) -> list[inspect.Parameter]:
@@ -70,10 +59,10 @@ class AppCreator:
 
     def _generate_route_handler(self, method_name: str, signature: inspect.Signature, route_config: dict[str, object]) -> str:
         http_method = str(route_config["httpMethod"])
-        jwt_required = bool(route_config.get("jwtRequired", False))
+        auth_required = bool(route_config.get("authRequired", route_config.get("jwtRequired", False)))
         create_token = bool(route_config.get("createAccessToken", False))
         success_message = route_config.get("successMessage")
-        route_path = self._get_route_path(method_name)
+        route_path = self._get_route_path(method_name, route_config)
         parameters = self._extract_parameters(signature)
         url_parameters = self._url_parameters(route_path)
         handler_name = f"handle_{method_name}"
@@ -88,10 +77,10 @@ class AppCreator:
         lines.append("        session = None")
         lines.append("        token = request.cookies.get(sessionCookieName, '')")
 
-        if jwt_required:
+        if auth_required:
             lines.append("        session = api_requests.services.auth.getSession(token)")
             lines.append("        if session is None:")
-            lines.append("            return jsonify({'error': 'Authentication required.'}), 401")
+            lines.append("            return json_error('Authentication required.', 401)")
             lines.append("        current_user = session.user.id")
         elif any(parameter.name in {"token", "userId"} for parameter in parameters):
             lines.append("        if token:")
@@ -99,7 +88,7 @@ class AppCreator:
 
         if method_name == "getSession":
             lines.append("        if session is None:")
-            lines.append("            return jsonify({'error': 'Authentication required.'}), 401")
+            lines.append("            return json_error('Authentication required.', 401)")
 
         call_arguments: list[str] = []
         for parameter in parameters:
@@ -111,7 +100,7 @@ class AppCreator:
                 call_arguments.append("token")
                 continue
             if name == "userId":
-                if jwt_required:
+                if auth_required:
                     lines.append("        userId = payload.get('userId', current_user)")
                     call_arguments.append("userId")
                     continue
@@ -125,21 +114,16 @@ class AppCreator:
                 lines.append(f"        {name} = payload.get({self._quote(name)}, {self._quote(default)})")
             call_arguments.append(name)
 
-        if jwt_required and "userId" in [parameter.name for parameter in parameters]:
+        if auth_required and "userId" in [parameter.name for parameter in parameters]:
             lines.append("        if userId != current_user:")
             lines.append("            raise PermissionError('You do not have permission to access this resource.')")
 
         lines.append(f"        result = api_requests.{method_name}({', '.join(call_arguments)})")
-        lines.append("        if isinstance(result, dict):")
-        lines.append("            response_data = dict(result)")
-        lines.append("        else:")
-        lines.append("            response_data = {'data': result}")
-        if success_message:
-            lines.append(f"        response_data.setdefault('message', {self._quote(success_message)})")
-        lines.append("        response = jsonify(response_data)")
+        message_value = self._quote(success_message) if success_message else "None"
+        lines.append(f"        response = build_api_response(result, success_message={message_value})")
 
         if create_token:
-            lines.append("        token_value = response_data.get('token', '')")
+            lines.append("        token_value = response.get_json().get('token', '')")
             lines.append("        if token_value:")
             lines.append("            response.set_cookie(")
             lines.append("                sessionCookieName,")
@@ -155,15 +139,15 @@ class AppCreator:
 
         lines.append(f"        return response, {status_code}")
         lines.append("    except PermissionError as error:")
-        lines.append("        return jsonify({'error': str(error)}), 403")
+        lines.append("        return json_error(str(error), 403)")
         lines.append("    except ValidationError as error:")
-        lines.append("        return jsonify({'error': error.errors()[0]['msg']}), 400")
+        lines.append("        return json_error(error.errors()[0]['msg'], 400)")
         lines.append("    except DuplicateEmailError as error:")
-        lines.append("        return jsonify({'error': str(error)}), 409")
+        lines.append("        return json_error(str(error), 409)")
         lines.append("    except ValueError as error:")
-        lines.append("        return jsonify({'error': str(error)}), 400")
+        lines.append("        return json_error(str(error), 400)")
         lines.append("    except Exception as error:")
-        lines.append("        return jsonify({'error': str(error)}), 500")
+        lines.append("        return json_error(str(error), 500)")
         return "\n".join(lines)
 
     def generate_app_code(self) -> str:
@@ -200,6 +184,24 @@ CORS(
 )
 
 api_requests = ApiRequests(services_provider=getServices)
+
+
+def build_api_payload(result, success_message=None):
+    if isinstance(result, dict):
+        payload = dict(result)
+    else:
+        payload = {{"data": result}}
+    if success_message:
+        payload.setdefault("message", success_message)
+    return payload
+
+
+def build_api_response(result, success_message=None):
+    return jsonify(build_api_payload(result, success_message=success_message))
+
+
+def json_error(message, status_code):
+    return jsonify({{"error": message}}), status_code
 
 
 {handler_code}

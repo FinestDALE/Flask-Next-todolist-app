@@ -84,8 +84,18 @@ Its job is simple:
 - declare whether authentication is required
 - declare whether a successful response should set a session cookie
 - optionally provide a success message
+- optionally provide the exact generated route path
 
 The decorator is metadata only. It does not register Flask routes by itself.
+
+Preferred fields today:
+
+- `authRequired`
+- `routePath`
+
+Backward compatibility:
+
+- `jwtRequired` still works, but `authRequired` is the clearer name in this app because the runtime currently uses cookie-backed session auth rather than a literal JWT decorator stack.
 
 ### `server/ApiRequest.py`
 
@@ -111,7 +121,12 @@ It contains:
 Example shape:
 
 ```python
-@route_config(httpMethod="POST", jwtRequired=True, successMessage="Task created successfully")
+@route_config(
+    httpMethod="POST",
+    authRequired=True,
+    successMessage="Task created successfully",
+    routePath="/api/tasks",
+)
 def createTask(self, userId: str, title: str, notes: str = "") -> dict:
     ...
     return {"task": task.model_dump(mode="json"), **responsePayload(store)}
@@ -127,7 +142,7 @@ Instead, it:
 - imports `ApiRequests`
 - finds methods decorated with `@route_config`
 - reads their signatures
-- maps each method to a route path
+- uses decorator metadata to determine route paths
 - generates `server/app.py`
 
 The generator also centralizes HTTP concerns that should not live inside business methods:
@@ -136,6 +151,7 @@ The generator also centralizes HTTP concerns that should not live inside busines
 - cookie lookup
 - auth/session checks
 - response formatting
+- shared response payload construction
 - success messages
 - cookie setting for login/register
 - cookie clearing for logout

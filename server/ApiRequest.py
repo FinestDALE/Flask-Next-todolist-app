@@ -290,11 +290,11 @@ class ApiRequests:
     def services(self) -> ApplicationServices:
         return self._services_provider()
 
-    @route_config(httpMethod="GET", jwtRequired=False)
+    @route_config(httpMethod="GET", authRequired=False, routePath="/api/health")
     def health(self) -> dict:
         return {"status": "ok", "time": nowIso()}
 
-    @route_config(httpMethod="GET", jwtRequired=False)
+    @route_config(httpMethod="GET", authRequired=False, routePath="/api/auth/session")
     def getSession(self, token: str = "") -> dict:
         """Get current session from token (passed as cookie by AppCreator)."""
         session = self.services.auth.getSession(token)
@@ -302,7 +302,13 @@ class ApiRequests:
             raise PermissionError("Authentication required.")
         return sessionPayload(session)
 
-    @route_config(httpMethod="POST", jwtRequired=False, createAccessToken=True, successMessage="Registration successful")
+    @route_config(
+        httpMethod="POST",
+        authRequired=False,
+        createAccessToken=True,
+        successMessage="Registration successful",
+        routePath="/api/auth/register",
+    )
     def registerUser(self, name: str, email: str, password: str) -> dict:
         """Register a new user."""
         registerPayload = AuthRegisterPayload(name=name, email=email, password=password)
@@ -315,7 +321,13 @@ class ApiRequests:
             raise Exception("Could not finish account setup. Please try again.")
         return sessionPayload(session)
 
-    @route_config(httpMethod="POST", jwtRequired=False, createAccessToken=True, successMessage="Login successful")
+    @route_config(
+        httpMethod="POST",
+        authRequired=False,
+        createAccessToken=True,
+        successMessage="Login successful",
+        routePath="/api/auth/login",
+    )
     def login(self, email: str, password: str) -> dict:
         """Log in a user."""
         loginPayload = AuthLoginPayload(email=email, password=password)
@@ -323,13 +335,23 @@ class ApiRequests:
         session = self.services.auth.createSession(user)
         return sessionPayload(session)
 
-    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Logged out successfully")
+    @route_config(
+        httpMethod="POST",
+        authRequired=True,
+        successMessage="Logged out successfully",
+        routePath="/api/auth/logout",
+    )
     def logout(self, userId: str, token: str = "") -> dict:
         """Log out the current user."""
         self.services.auth.deleteSession(token)
         return {"ok": True}
 
-    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Password updated successfully")
+    @route_config(
+        httpMethod="POST",
+        authRequired=True,
+        successMessage="Password updated successfully",
+        routePath="/api/auth/change-password",
+    )
     def changePassword(self, userId: str, currentPassword: str, newPassword: str, confirmPassword: str) -> dict:
         """Change password for the current user."""
         changePasswordPayload = AuthChangePasswordPayload(
@@ -340,12 +362,17 @@ class ApiRequests:
         self.services.auth.changePassword(userId, changePasswordPayload)
         return {"ok": True}
 
-    @route_config(httpMethod="GET", jwtRequired=True)
+    @route_config(httpMethod="GET", authRequired=True, routePath="/api/tasks")
     def getTasks(self, userId: str) -> dict:
         """Get all tasks for the current user."""
         return responsePayload(ensureStore(self.services, userId))
 
-    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Task created successfully")
+    @route_config(
+        httpMethod="POST",
+        authRequired=True,
+        successMessage="Task created successfully",
+        routePath="/api/tasks",
+    )
     def createTask(
         self,
         userId: str,
@@ -374,7 +401,12 @@ class ApiRequests:
         saveStore(self.services, userId, store)
         return {"task": newTask.model_dump(mode="json"), **responsePayload(store)}
 
-    @route_config(httpMethod="PATCH", jwtRequired=True, successMessage="Task updated successfully")
+    @route_config(
+        httpMethod="PATCH",
+        authRequired=True,
+        successMessage="Task updated successfully",
+        routePath="/api/tasks/<taskId>",
+    )
     def updateTask(
         self,
         userId: str,
@@ -414,7 +446,12 @@ class ApiRequests:
                 return {"task": updated.model_dump(mode="json"), **responsePayload(store)}
         raise ValueError("Task not found.")
 
-    @route_config(httpMethod="DELETE", jwtRequired=True, successMessage="Task deleted successfully")
+    @route_config(
+        httpMethod="DELETE",
+        authRequired=True,
+        successMessage="Task deleted successfully",
+        routePath="/api/tasks/<taskId>",
+    )
     def deleteTask(self, userId: str, taskId: str) -> dict:
         """Delete an existing task."""
         store = ensureStore(self.services, userId)
@@ -425,7 +462,12 @@ class ApiRequests:
         saveStore(self.services, userId, store)
         return responsePayload(store)
 
-    @route_config(httpMethod="DELETE", jwtRequired=True, successMessage="Completed tasks cleared successfully")
+    @route_config(
+        httpMethod="DELETE",
+        authRequired=True,
+        successMessage="Completed tasks cleared successfully",
+        routePath="/api/tasks",
+    )
     def clearCompleted(self, userId: str) -> dict:
         """Clear all completed tasks."""
         store = ensureStore(self.services, userId)
