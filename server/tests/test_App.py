@@ -2,19 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import importlib.util
 from pathlib import Path
 import sys
 from typing import Any
 
 import pytest
 
-server_path = Path(__file__).resolve().parents[1] / "server.py"
-server_spec = importlib.util.spec_from_file_location("todo_server_module", server_path)
-assert server_spec and server_spec.loader
-server_module = importlib.util.module_from_spec(server_spec)
-sys.modules[server_spec.name] = server_module
-server_spec.loader.exec_module(server_module)
+# Add server to path so we can import App directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import App as server_module
 
 
 def utc_now() -> datetime:
