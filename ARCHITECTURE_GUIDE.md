@@ -1,880 +1,555 @@
 # Todo App Architecture Guide
 
-This guide describes the architecture that matches the current app. It is written around the real flow of this project: authentication first, then a per-user task dashboard backed by MongoDB.
+This document describes the architecture that the project should follow today.
+It is written to match the current codebase, not the older manual Flask pattern.
 
-## What This App Does
+## Overview
 
-This app is a personal task management dashboard with:
+This project is a full-stack todo application with:
 
-- **Authentication**: Email/password registration and login with secure password hashing
-- **Session Management**: Server-side session tokens stored in MongoDB with 14-day expiration
-- **Per-user Storage**: Each authenticated user has their own isolated task store in MongoDB
-- **Task Operations**: Create, read, update, delete tasks, plus bulk clear completed tasks
-- **Task Metadata**: Title, notes/description, priority (low/medium/high), category, due date/time, completion status, creation/update timestamps
-- **Account Security**: Password change for authenticated users
-- **Frontend**: Single-page Next.js (React) dashboard UI with real-time updates
+- a Next.js client in `client/`
+- a Flask API in `server/`
+- MongoDB for users, sessions, and tasks
+- generated Flask routes built from business methods in `ApiRequest.py`
 
-## Core Architecture
-
-The backend follows a simple four-file structure:
+The most important architectural rule is this:
 
 ```text
-server.py        -> thin entrypoint and Flask app instantiation
-AppCreator.py    -> Flask app composition, CORS, and global routing
-ApiRequest.py    -> request handlers, repositories, and service layer
-Object.py        -> Pydantic models, validation, data defaults, and helpers
+ApiRequest.py defines the business actions
+AppCreator.py generates the Flask runtime app
+app.py is generated output and should not be edited manually
+Object.py defines the shared data language
 ```
 
-## Technology Stack
+## High-Level Flow
 
-**Backend:**
-- Flask (3.0+) - Web framework
-- Pydantic (2.7+) - Data validation and serialization
-- PyMongo (4.8+) - MongoDB driver
-- Werkzeug - Password hashing (bcrypt-compatible)
-- Flask-CORS - Cross-Origin Resource Sharing
-
-**Frontend:**
-- Next.js (TypeScript) - React-based framework
-- React Hooks - State management (no Redux/Context API)
-- CSS Modules - Styling
-
-**Database:**
-- MongoDB - NoSQL document database
-- Collections: `users`, `sessions`, `tasks` (in `todo_app` database by default)
-
-## Why This Structure
-
-This app prioritizes clarity and simplicity:
-
-- **AppCreator.py**: Handles Flask setup, CORS configuration, and route registration - the "infrastructure" layer
-- **ApiRequest.py**: Contains all request handlers, repositories, and services - the "application flow" layer
-- **Object.py**: Defines data shapes, validates input, and centralizes constants - the "domain" layer
-- **server.py**: Instantiates the app and provides a consistent entry point for local dev and testing
-
-This approach makes it clear where each responsibility belongs and keeps business logic separate from infrastructure.
-
-## API Endpoints
-
-All endpoints are prefixed with `/api`:
-
-### Health & Session
-- `GET /api/health` - Returns `{"status": "ok", "time": ISO8601}`
-- `GET /api/auth/session` - Returns user session; 401 if not authenticated
-
-### Authentication
-- `POST /api/auth/register` - Create account and start session
-  - Body: `{name, email, password}`
-  - Response: 201 with session cookie and user data
-- `POST /api/auth/login` - Authenticate and start session
-  - Body: `{email, password}`
-  - Response: 200 with session cookie and user data
-- `POST /api/auth/logout` - End session and clear cookie
-  - Response: 200 with cleared session cookie
-- `POST /api/auth/change-password` - Update password (requires auth)
-  - Body: `{currentPassword, newPassword}`
-  - Response: 200 on success, 400 if current password wrong
-
-### Tasks (all require authentication)
-- `GET /api/tasks` - Fetch all tasks for user
-  - Response: `{tasks, summary, categories}`
-- `POST /api/tasks` - Create new task
-  - Body: Task fields (title required, others optional)
-  - Response: 201 with new task and updated store
-- `PATCH /api/tasks/<taskId>` - Update specific task
-  - Body: Partial task fields (all optional)
-  - Response: 200 with updated task and store, 404 if not found
-- `DELETE /api/tasks/<taskId>` - Delete specific task
-  - Response: 200 with updated store, 404 if not found
-- `DELETE /api/tasks` - Clear all completed tasks
-  - Response: 200 with updated store
-
-## Request Lifecycle
-
-Here's how a typical request flows through the system:
-
-1. Browser makes request to `/api/tasks`
-2. **AppCreator** routes request to correct handler in **ApiRequests**
-3. **ApiRequests** extracts session token from cookies
-4. **MongoAuthRepository** validates token and loads user from MongoDB
-5. **ApiRequests** validates input JSON using Pydantic models from **Object.py**
-6. **MongoTaskRepository** reads/writes task data to MongoDB
-7. **Object** helpers normalize and transform data
-8. **ApiRequests** returns JSON response with set-cookie headers if needed
-9. Frontend receives response and updates local React state
-
-## Backend Components
-
-### 1. `server/AppCreator.py` - Flask Setup
-
-**Purpose**: Composes the Flask application and configures global middleware.
-
-**Responsibilities**:
-- Creates Flask app instance
-- Configures CORS (Cross-Origin Resource Sharing) for allowed frontend origins
-- Disables JSON key sorting for predictable output
-- Registers all routes by calling `ApiRequests.register(app)`
-
-**Key Methods**:
-- `create_app()` - Builds and returns configured Flask app
-- `build_app_file_content()` - Generates the code for `app.py` (helper for bootstrapping)
-
-**Allowed CORS Origins** (from Object.py):
-```
-http://localhost:3000
-http://127.0.0.1:3000
-http://localhost:3001
-http://127.0.0.1:3001
+```text
+Developer edits ApiRequest.py methods and decorates them with @route_config
+        |
+        v
+Developer runs: python server/AppCreator.py
+        |
+        v
+AppCreator.py inspects decorated methods and generates server/app.py
+        |
+        v
+Runtime starts from server/app.py
+        |
+        v
+Client calls /api/* endpoints
+        |
+        v
+Generated route handlers call ApiRequests business methods
+        |
+        v
+Repositories read/write MongoDB
 ```
 
-This file should stay focused on infrastructure concerns, not business logic.
+## Project Structure
 
-### 2. `server/ApiRequest.py` - Application Logic
+```text
+client/
+  app/
+    globals.css
+    layout.tsx
+    page.tsx
 
-**Purpose**: Handles all request/response logic, database access, and business rules.
+server/
+  ApiRequest.py
+  AppCreator.py
+  Object.py
+  app.py
+  route_config.py
+  requirements.txt
+  pytest.ini
+  tests/
+    test_app.py
 
-**Key Classes**:
-
-#### `MongoDatabase`
-Manages MongoDB connection and ensures indexes:
-- Creates/maintains indexes on `email` (unique), `token` (unique), `expiresAt` (TTL)
-- Pings MongoDB on startup to verify connectivity
-- Exposes `MongoCollections` with references to users, sessions, tasks collections
-
-#### `MongoAuthRepository`
-Authentication and session management:
-- `createUser(payload)` - Register new user, returns SessionUser
-- `authenticateUser(payload)` - Validate credentials
-- `changePassword(userId, payload)` - Update password
-- `createSession(user)` - Generate 14-day session token, store in MongoDB
-- `getSession(token)` - Load session, validate expiration, return AuthenticatedSession
-- `deleteSession(token)` - Clear session on logout
-- `deleteUser(userId)` - Remove user and all sessions
-
-#### `MongoTaskRepository`
-Task persistence (manages entire task store per user):
-- `loadUserStore(userId)` - Fetch all user tasks as TaskStore
-- `saveUserStore(userId, store)` - Write entire task store to MongoDB
-
-#### `ApplicationServices`
-Caches repositories for a request:
-- `auth` - MongoAuthRepository instance
-- `tasks` - MongoTaskRepository instance
-
-#### `ApiRequests`
-HTTP request handlers:
-- Validates session from cookies
-- Implements all `/api/` endpoints
-- Returns normalized JSON responses
-- Sets/clears session cookies
-
-**Helper Functions**:
-- `buildSummary(tasks)` - Calculate total and completed count
-- `buildSessionResponse(session, statusCode)` - Create response with session cookie
-- `clearSessionCookie(response)` - Expire session cookie
-- `createTaskRecord(payload)` - Generate new Task with UUID and timestamps
-- `applyTaskUpdates(current, updates)` - Merge updates into existing task
-- `ensureStore(services, userId)` - Load or create empty task store
-- `saveStore(services, userId, store)` - Persist task store to MongoDB
-- `responsePayload(store)` - Format tasks/summary/categories for JSON
-- `validationErrorResponse(error)` - Format Pydantic validation errors as JSON
-- `nextCacheKey(offset)` - Generate cache key for pagination
-
-**MongoDB Collections Schema**:
-
-**users** (unique index on email):
-```json
-{
-  "_id": "uuid",
-  "name": "string",
-  "email": "string (unique)",
-  "passwordHash": "bcrypt hash",
-  "createdAt": "datetime"
-}
+start-dev.bat
+guide.md
+MIGRATION_GUIDE.md
+ARCHITECTURE_GUIDE.md
 ```
 
-**sessions** (unique index on token, TTL index on expiresAt):
-```json
-{
-  "_id": "uuid",
-  "token": "string (unique)",
-  "userId": "uuid",
-  "createdAt": "datetime",
-  "expiresAt": "datetime (auto-expires after 14 days)"
-}
+## Backend Architecture
+
+### `server/route_config.py`
+
+This file provides the `@route_config(...)` decorator.
+
+Its job is simple:
+
+- attach route metadata to an action method
+- declare the HTTP method
+- declare whether authentication is required
+- declare whether a successful response should set a session cookie
+- optionally provide a success message
+
+The decorator is metadata only. It does not register Flask routes by itself.
+
+### `server/ApiRequest.py`
+
+This is the main application layer.
+
+It contains:
+
+- MongoDB connection setup
+- repository classes
+- service wiring
+- task/session helper functions
+- `ApiRequests`, the business action class used by the generator
+
+`ApiRequests` methods should follow these rules:
+
+- no `flask.request`
+- no `flask.jsonify`
+- no manual route registration
+- explicit method parameters
+- return plain Python data, usually `dict`
+- rely on Pydantic models and repository helpers for validation and persistence
+
+Example shape:
+
+```python
+@route_config(httpMethod="POST", jwtRequired=True, successMessage="Task created successfully")
+def createTask(self, userId: str, title: str, notes: str = "") -> dict:
+    ...
+    return {"task": task.model_dump(mode="json"), **responsePayload(store)}
 ```
 
-**tasks** (compound index on ownerId + createdAt):
-```json
-{
-  "_id": "uuid",
-  "ownerId": "uuid",
-  "tasks": [
-    {
-      "id": "uuid",
-      "title": "string",
-      "notes": "string",
-      "completed": "boolean",
-      "category": "string",
-      "priority": "low|medium|high",
-      "dueDate": "date (optional)",
-      "dueTime": "time (optional)",
-      "createdAt": "datetime",
-      "updatedAt": "datetime"
-    }
-  ]
-}
-```
+### `server/AppCreator.py`
 
-### 3. `server/Object.py` - Data Models & Validation
+This is a development-time code generator.
 
-**Purpose**: Defines data shapes, validation rules, and shared constants.
+It does not run the Flask app directly.
+Instead, it:
 
-**Key Constants**:
+- imports `ApiRequests`
+- finds methods decorated with `@route_config`
+- reads their signatures
+- maps each method to a route path
+- generates `server/app.py`
+
+The generator also centralizes HTTP concerns that should not live inside business methods:
+
+- request JSON parsing
+- cookie lookup
+- auth/session checks
+- response formatting
+- success messages
+- cookie setting for login/register
+- cookie clearing for logout
+- exception-to-HTTP-status mapping
+
+### `server/app.py`
+
+This file is generated output.
+
+It is the actual Flask runtime entry point and should be treated as disposable build output:
+
+- safe to regenerate
+- not safe to hand-edit
+- always derived from `ApiRequest.py` and `AppCreator.py`
+
+It currently does these jobs:
+
+- creates the Flask app
+- configures CORS
+- instantiates `ApiRequests`
+- exposes `/api/*` routes
+- handles auth/session cookie flow
+- translates raised exceptions into JSON HTTP responses
+
+### `server/Object.py`
+
+This file is the domain model layer.
+
+It contains:
+
+- constants
+- Pydantic models
+- validation rules
+- normalization helpers
+- date/time helpers
+- typed containers such as `MongoCollections`
+
+This file should be the first place to edit when the data shape changes.
+
+## Backend Data Model
+
+### Auth and Session Models
+
+Important models include:
+
+- `SessionUser`
+- `AuthenticatedSession`
+- `AuthRegisterPayload`
+- `AuthLoginPayload`
+- `AuthChangePasswordPayload`
+
+Important auth behavior:
+
+- passwords are hashed with Werkzeug
+- session tokens are stored in MongoDB
+- sessions expire after `sessionDurationDays`
+- the cookie name is `todo_session`
+
+### Task Models
+
+Important models include:
+
+- `TaskBase`
+- `Task`
+- `TaskCreate`
+- `TaskUpdate`
+- `TaskStore`
+
+Task fields currently used by both backend and frontend:
+
+- `title`
+- `notes`
+- `completed`
+- `category`
+- `priority`
+- `dueDate`
+- `dueTime`
+- `createdAt`
+- `updatedAt`
+
+Important note:
+
+- the current contract uses `notes`, not `description`
+- the current contract uses both `dueDate` and `dueTime`
+
+## Persistence Layer
+
+### MongoDB Collections
+
+The backend uses three collections by default:
+
+- `users`
+- `sessions`
+- `tasks`
+
+Environment defaults come from `Object.py`:
+
 ```python
 defaultMongoUri = "mongodb://127.0.0.1:27017"
 defaultMongoDb = "todo_app"
 defaultTaskCollection = "tasks"
 defaultUserCollection = "users"
 defaultSessionCollection = "sessions"
-sessionCookieName = "todo_session"
-sessionDurationDays = 14
-defaultTitle = "Untitled task"
-defaultCategory = "General"
-defaultPriority = "medium"
 ```
 
-**Pydantic Models** (inherit from `BaseModel` for validation):
+### `MongoAuthRepository`
 
-#### `TaskBase`
-Base fields shared by Task, TaskCreate, TaskUpdate:
-- `title: str` - Task name (required for creates)
-- `notes: str` - Description/notes
-- `completed: bool` - Completion status
-- `category: str` - Category grouping
-- `priority: "low"|"medium"|"high"` - Priority level
-- `dueDate: date | None` - Optional due date
-- `dueTime: time | None` - Optional due time
+Responsibilities:
 
-Validators normalize input:
-- Text fields: stripped and non-empty
-- Category: defaults to "General" if empty
-- Priority: lowercased, defaults to "medium"
-- Due fields: mapped from snake_case or camelCase aliases
+- create user
+- authenticate user
+- change password
+- create session
+- fetch session by token
+- delete session
+- delete user
 
-#### `Task` (extends `TaskBase`)
-Complete task record with metadata:
-- All TaskBase fields
-- `id: str` - UUID
-- `createdAt: datetime` - Creation timestamp (UTC)
-- `updatedAt: datetime` - Last update timestamp (UTC)
+Important behavior:
 
-Validators ensure title is non-empty.
+- duplicate email raises `DuplicateEmailError`
+- expired or invalid sessions are cleaned up
+- session lookup loads the linked user
 
-#### `TaskCreate` (extends `TaskBase`)
-Input model for creating tasks - same as TaskBase but title is required.
-Validates due date is not in the past.
+### `MongoTaskRepository`
 
-#### `TaskUpdate` (extends `TaskBase`)
-Input model for partial updates - all fields optional.
+Responsibilities:
 
-#### `TaskStore`
-Wrapper for user's complete set of tasks:
-```python
-@dataclass
-class TaskStore:
-    tasks: list[Task]
+- load a user task store
+- save a user task store
+
+Current storage model:
+
+- tasks are stored as one document per task
+- each task document includes `ownerId`
+- the repository rebuilds a `TaskStore` from those task documents
+
+This is important because some older docs described the tasks collection as one giant embedded array. That is not how the current code works.
+
+## API Surface
+
+All routes are prefixed with `/api`.
+
+### Health
+
+- `GET /api/health`
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "time": "2026-03-29T15:15:26.958328+00:00"
+}
 ```
 
-#### `SessionUser`
-Minimal user info in session:
-- `id: str` - User ID
-- `name: str` - Display name
-- `email: str` - Email address
-- `createdAt: datetime` - Account creation time
+### Auth
 
-#### `AuthenticatedSession`
-Complete session info returned after login/register:
-- `token: str` - Session token
-- `user: SessionUser` - User info
-- `expiresAt: datetime` - UTC expiration time
+- `GET /api/auth/session`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/auth/change-password`
 
-#### Auth Payload Models
-- `AuthRegisterPayload` - name, email, password for registration
-- `AuthLoginPayload` - email, password for login
-- `AuthChangePasswordPayload` - currentPassword, newPassword
+Behavior:
 
-**Helper Functions**:
+- `register` creates a user, seeds starter tasks, creates a session, and sets the session cookie
+- `login` authenticates and sets the session cookie
+- `session` reads the session cookie and returns the authenticated user
+- `logout` deletes the session and clears the cookie
+- `change-password` requires authentication and validates `currentPassword`, `newPassword`, and `confirmPassword`
 
-**Date/Time**:
-- `nowUtc()` - Get current UTC datetime
-- `nowIso()` - Get current time as ISO 8601 string
-- `ensureUtcAwareDateTime(value)` - Ensure datetime has UTC timezone
+### Tasks
 
-**Text Normalization**:
-- `normalizeTextValue(value, allowNone=False)` - Strip whitespace, return empty string or None
-- `normalizePriorityValue(value, allowNone=False)` - Lowercase, default to "medium"
-- `normalizeDueValue(value)` - Convert empty string to None
-- `normalizeEmailValue(value)` - Lowercase and strip
+- `GET /api/tasks`
+- `POST /api/tasks`
+- `PATCH /api/tasks/<taskId>`
+- `DELETE /api/tasks/<taskId>`
+- `DELETE /api/tasks`
 
-**Validation**:
-- `validateDueDate(value)` - Ensure date is today or later
-- `validateDueDateTime(dueDate, dueTime)` - Ensure both or neither are set, time not in past
-- `fallbackValue(value, default, allowNone=False)` - Use default if empty
+Behavior:
 
-**Data Structures**:
-- `MongoCollections` - Dataclass wrapping user/session/task collections
-- `Priority` - Type alias for priority levels
+- all task routes require authentication
+- task responses return normalized task data plus summary/category state
+- create/update routes validate input through `TaskCreate` and `TaskUpdate`
 
-### 4. `server/server.py` - Entry Point
+## Request Lifecycle
 
-**Purpose**: Provides a consistent launch point for the Flask app.
+### Authenticated Task Request
 
-**Responsibilities**:
-- Set up Python path so imports resolve correctly
-- Import and re-export key names (AppCreator, ApiRequests, Object items)
-- Create Flask app by instantiating `AppCreator`
-- Export `app` for WSGI servers (e.g., Gunicorn)
-- Run Flask dev server with debug enabled if executed directly
+Example: `PATCH /api/tasks/<taskId>`
 
-**Why keep it thin?**
-- Makes it easy to test (can import and use `app` object)
-- Makes it easy to deploy (WSGI servers can find the `app` object)
-- Makes local development consistent (always `python server.py`)
-- Ensures architecture lives in ApiRequest/AppCreator, not here
-
-**How to run**:
-```bash
-cd server
-python server.py              # Local dev (debug mode)
-# or
-flask --app server.py run    # Flask CLI (better for watching)
+```text
+Client sends request with session cookie
+-> generated app.py route reads JSON body
+-> generated app.py reads todo_session cookie
+-> auth repository resolves the session
+-> generated route injects current userId into ApiRequests.updateTask(...)
+-> TaskUpdate validates the partial payload
+-> task repository loads the user's tasks
+-> task is updated and saved
+-> generated route returns JSON response
 ```
 
-**Environment Variables**:
-```bash
-MONGODB_URI="mongodb://127.0.0.1:27017"              # MongoDB connection string
-MONGODB_DB="todo_app"                                 # Database name
-MONGODB_COLLECTION="tasks"                           # Default tasks collection
-MONGODB_USERS_COLLECTION="users"                     # Optional override
-MONGODB_SESSIONS_COLLECTION="sessions"               # Optional override
+### Login Request
+
+```text
+Client sends email/password
+-> generated route extracts payload
+-> ApiRequests.login validates via AuthLoginPayload
+-> auth repository authenticates user
+-> auth repository creates session
+-> generated route sets todo_session cookie
+-> response returns user + token + message
 ```
 
 ## Frontend Architecture
 
-The frontend is a single-page Next.js 15+ application written in TypeScript/React.
-
-**Location**: `client/app/page.tsx` (main component)
-
-**Technology**:
-- Next.js 15+ with TypeScript
-- React 18+ Hooks (useState, useEffect, useMemo, useRef)
-- Server-side rendering disabled (`"use client"`)
-- CSS Modules for styling
-- No external state management (Redux/Context not needed for this scale)
-
-### Frontend State
-
-The main page component manages:
-```typescript
-{
-  // Authentication
-  user: User | null,
-  isLoading: boolean,
-  
-  // Tasks
-  tasks: Task[],
-  categories: string[],
-  summary: { total: number, completed: number },
-  
-  // UI
-  filterCategory: string,
-  searchTerm: string,
-  showCreateForm: boolean,
-  showSecurityDialog: boolean,
-  theme: "light" | "dark",
-  
-  // Editing
-  editingTaskId: string | null,
-  editFormData: Partial<Task>
-}
-```
-
-### API Communication
-
-Single `request()` helper function:
-- Prepends API base URL from `NEXT_PUBLIC_API_BASE` environment variable
-- Sets `Content-Type: application/json`
-- Includes cookies with `credentials: "include"`
-- Parses JSON responses
-- Converts HTTP errors to thrown `Error` objects
-
-### Data Types
-
-**User**:
-```typescript
-{
-  id: string;
-  name: string;
-  email: string;
-  createdAt: string; // ISO 8601
-}
-```
-
-**Task**:
-```typescript
-{
-  id: string;
-  title: string;
-  notes: string;
-  completed: boolean;
-  category: string;
-  priority: "low" | "medium" | "high";
-  dueDate: string | null; // ISO date
-  dueTime: string | null; // HH:mm format
-  createdAt: string; // ISO 8601
-  updatedAt: string; // ISO 8601
-}
-```
-
-**ApiState** (response format):
-```typescript
-{
-  tasks: Task[];
-  summary: { total: number; completed: number };
-  categories: string[];
-}
-```
-
-### Frontend Flow
-
-1. Component mounts → fetch `/api/auth/session` to restore session
-2. If authenticated → fetch `/api/tasks` to load user's tasks
-3. User can:
-   - Create task → `POST /api/tasks` → merge response into state
-   - Update task → `PATCH /api/tasks/:id` → replace task in state
-   - Delete task → `DELETE /api/tasks/:id` → remove from state
-   - Clear completed → `DELETE /api/tasks` → filter local state
-   - Change password → `POST /api/auth/change-password` → show confirmation
-4. Every state change causes re-render (React's batch updates)
-5. Theme preference persisted to localStorage
-
-### UI Sections
-
-- **Auth Screen**: Login/register forms (shown if not authenticated)
-- **Top Bar**: Refresh, theme toggle, security/account options, logout button
-- **Summary Strip**: "5 tasks, 2 completed"
-- **Left Sidebar**: 
-  - Quick capture form
-  - Category filter
-  - Search input
-- **Task List**: 
-  - Shows filtered/searched tasks
-  - Checkbox to complete
-  - Click to edit details
-  - Priority/due date indicators
-  - Delete button
-- **Security Dialog**: Password change form (modal)
-- right detail panel for task editing
-- modal dialog for password change
-
-## Data Flow By Feature
-
-### Registration flow
-
-```text
-Frontend register form
--> POST /api/auth/register
--> AuthRegisterPayload validates input
--> MongoAuthRepository.createUser()
--> defaultStore() seeds starter tasks
--> session is created
--> cookie is returned
--> frontend loads tasks
-```
-
-### Login flow
-
-```text
-Frontend login form
--> POST /api/auth/login
--> AuthLoginPayload validates input
--> MongoAuthRepository.authenticateUser()
--> session is created
--> cookie is returned
--> frontend loads tasks
-```
-
-### Session restore flow
-
-```text
-Page load
--> GET /api/auth/session
--> session cookie is read
--> MongoAuthRepository.getSession()
--> frontend either stays signed out or loads tasks
-```
+The frontend currently lives mostly in [page.tsx](c:/Users/glenndel/OneDrive/Desktop/Flask/Flask-Next-todolist-app/client/app/page.tsx).
 
-### Task flow
-
-```text
-Create/update/delete task
--> authenticated endpoint
--> validate payload with TaskCreate or TaskUpdate
--> load store for current user
--> mutate store
--> save store for current user
--> return fresh task list + summary + categories
-```
+It is a single client-side React page that manages:
 
-### Password change flow
+- bootstrapping auth state
+- loading task data
+- auth forms
+- task creation
+- task editing
+- filtering/search
+- password change modal
+- theme state
 
-```text
-Security dialog submit
--> POST /api/auth/change-password
--> require active session
--> AuthChangePasswordPayload validates input
--> current password is verified
--> new password hash is stored
--> frontend shows success and closes dialog
-```
+### Frontend Request Contract
 
-## MongoDB Layout
+The page uses a shared `request()` helper that:
 
-This app currently uses three collections:
+- prefixes the base API URL
+- sends `Content-Type: application/json`
+- includes cookies with `credentials: "include"`
+- parses JSON
+- throws on non-OK responses
 
-- `todo_app.users`
-- `todo_app.sessions`
-- `todo_app.tasks`
+The server must therefore always return JSON for normal API usage.
 
-### Users
+### Frontend State Shape
 
-Stores:
+Important frontend types include:
 
-- account id
-- name
-- email
-- password hash
-- created timestamp
+- `Task`
+- `User`
+- `ApiState`
+- `ApiPayload`
+- `SessionPayload`
 
-### Sessions
+The client expects:
 
-Stores:
+- `notes`
+- `priority`
+- `dueDate`
+- `dueTime`
+- `summary.total`
+- `summary.completed`
+- `summary.open`
+- `summary.dueToday`
 
-- session token
-- user id
-- created timestamp
-- expiry timestamp
+Any backend contract change should be reflected carefully in both `Object.py` and `client/app/page.tsx`.
 
-Session expiration is enforced with a TTL index on `expiresAt`.
+## Testing Architecture
 
-### Tasks
+Backend tests currently live in [test_app.py](c:/Users/glenndel/OneDrive/Desktop/Flask/Flask-Next-todolist-app/server/tests/test_app.py).
 
-Stores:
+The tests use:
 
-- task id
-- owner id
-- title
-- notes
-- category
-- priority
-- due date/time
-- completion status
-- created/updated timestamps
+- Flask test client
+- fake in-memory auth repository
+- fake in-memory task repository
+- dependency replacement by swapping `app.api_requests`
 
-## Design Rules For Future Changes
+This means:
 
-To keep this architecture clean, use these rules:
+- tests do not require MongoDB
+- tests exercise the generated Flask routes
+- tests verify the current request/response contract
 
-### If you add or change data shape
-
-Edit `server/Object.py`.
-
-Examples:
-
-- new task fields
-- new auth payload fields
-- validation rules
-- defaults
-
-### If you add or change request flow
-
-Edit `server/ApiRequest.py`.
-
-Examples:
-
-- new endpoint
-- new repository logic
-- new auth flow
-- new summary calculation
-
-### If you add global Flask behavior
-
-Edit `server/AppCreator.py`.
-
-Examples:
-
-- middleware-like hooks
-- CORS policy
-- error handling
-- app factory setup
-
-### If you need bootstrapping only
-
-Edit `server/server.py`.
-
-Examples:
-
-- app startup
-- compatibility exports
-- local run behavior
-
-## Frontend Change Rules
-
-### If you change API usage
-
-Update `client/app/page.tsx` request flow and local state transitions.
-
-### If you change layout or styling
-
-Update:
-
-- `client/app/page.tsx`
-- `client/app/globals.css`
-
-### If the frontend starts growing
-
-The next clean step would be:
-
-```text
-client/app/page.tsx
--> split into:
-   - app/lib/api.ts
-   - app/lib/auth.ts
-   - app/components/auth/*
-   - app/components/dashboard/*
-   - app/components/tasks/*
-   - app/components/account/*
-```
-
-That is not required yet, but it is the natural next architecture milestone.
-
-## Testing Strategy
-
-Current backend tests live in:
-
-```text
-server/tests/test_server.py
-```
-
-These tests validate:
+Current coverage includes:
 
 - health endpoint
-- registration
-- duplicate registration protection
-- auth-required task access
-- login flow
-- password change flow
-- basic task creation
-- datetime normalization
-
-The tests patch `getServices()` so the app can be tested without real MongoDB access.
-
-That is a good pattern and should be kept.
-
-## Run Commands
-
-### Backend
-
-```powershell
-cd server
-py -3 -m pip install -r requirements.txt
-
-```
-
-### Frontend
-
-```powershell
-cd client
-cmd /c npm run dev
-```
-
-### Tests
-
-```powershell
-cd server
-pytest
-```
+- auth-required session route
+- register flow
+- login + session restore
+- task CRUD flow
+- password change validation
+- logout behavior
 
 ## Development Workflow
 
-### Local Development Setup
+### When Changing the API
 
-1. **Install MongoDB** locally or use MongoDB Atlas connection string
-2. **Backend**:
-   ```bash
-   cd server
-   py -3 -m pip install -r requirements.txt
-   $env:MONGODB_URI="mongodb://127.0.0.1:27017"
-   $env:MONGODB_DB="todo_app"
-   py -3 -m flask --app server.py run
-   ```
-   Backend runs on `http://localhost:5000`
+If you add or change an endpoint:
 
-3. **Frontend**:
-   ```bash
-   cd client
-   npm install
-   npm run dev
-   ```
-   Frontend runs on `http://localhost:3000`
+1. edit `server/ApiRequest.py`
+2. update or add `@route_config(...)`
+3. regenerate `server/app.py` with `python server/AppCreator.py`
+4. update tests
+5. run `pytest`
 
-4. **Both together**:
-   ```bash
-   start-dev.bat    # Windows batch file that launches both in parallel
-   ```
+### When Changing Data Shape
 
-### Making Changes
+If you add or change task/auth fields:
 
-**Backend change? Edit:**
-- `server/ApiRequest.py` for request handlers
-- `server/Object.py` for data models/constants
-- `server/AppCreator.py` for Flask configuration
-- `server/tests/test_server.py` for new tests
+1. update `server/Object.py`
+2. update `server/ApiRequest.py`
+3. update `client/app/page.tsx`
+4. regenerate `server/app.py` if method signatures changed
+5. update tests
 
-**Frontend change? Edit:**
-- `client/app/page.tsx` for components/logic
-- `client/app/globals.css` for styling
-- `client/next.config.ts` for build config
+### When Changing Flask Runtime Behavior
 
-**MongoDB schema/collection change?**
-Only if necessary — consider how `MongoDatabase._ensureIndexes()` will handle the migration.
+If you want to change centralized route behavior such as:
 
-### Testing Locally
+- auth injection
+- cookie policy
+- exception mapping
+- response wrapping
+- route generation rules
 
-**Backend tests**:
-```bash
+edit `server/AppCreator.py`, then regenerate `server/app.py`.
+
+## Run Commands
+
+### Install Backend Dependencies
+
+```powershell
 cd server
-pytest              # Run all tests
-pytest -v           # Verbose output
-pytest test_server.py -k test_name    # Run specific test
+python -m pip install -r requirements.txt
 ```
 
-**Frontend**:
-- Use browser DevTools
-- Check Network tab for API requests
-- Use React DevTools extension
+### Generate the Runtime App
 
-### Common Local Issues
+```powershell
+cd server
+python AppCreator.py
+```
 
-- **MongoDB connection refused?** Ensure MongoDB is running on localhost:27017
-- **CORS errors?** Frontend must run on localhost:3000 or 3001 (see allowedDevOrigins)
-- **Session cookie not set?** Ensure `credentials: "include"` is in fetch options
-- **"Module not found"?** Reinstall: `pip install -r requirements.txt` or `npm install`
-- **Port 5000 already in use?** Use `flask --app server.py run --port 5001`
+### Run the Backend
 
-## Deployment Considerations
+```powershell
+cd server
+python app.py
+```
 
-### Backend Deployment
+### Run the Frontend
 
-For production (Gunicorn, Docker, or serverless):
+```powershell
+cd client
+npm install
+npm run dev
+```
 
-1. Set environment variables for production MongoDB:
-   ```bash
-   MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/"
-   MONGODB_DB="todo_app_prod"
-   ```
+### Run Both on Windows
 
-2. Use a WSGI server like Gunicorn:
-   ```bash
-   gunicorn -w 4 -b 0.0.0.0:5000 server:app
-   ```
+```powershell
+start-dev.bat
+```
 
-3. Consider:
-   - SSL/HTTPS (secure=True in set_cookie)
-   - Session cookie SameSite policy (currently Lax)
-   - CORS allowed origins (update allowedDevOrigins)
-   - MongoDB authentication and network access
-   - Rate limiting on auth endpoints
-   - Password requirements/complexity
+### Run Tests
 
-### Frontend Deployment
+```powershell
+cd server
+pytest -q
+```
 
-Deploy `client/` to a static host (Vercel, Netlify, etc.):
+## Environment Variables
 
-1. Build:
-   ```bash
-   npm run build
-   ```
+The backend supports:
 
-2. Set `NEXT_PUBLIC_API_BASE` to production API URL
-3. Deploy build output
+```text
+MONGODB_URI
+MONGODB_DB
+MONGODB_COLLECTION
+MONGODB_USERS_COLLECTION
+MONGODB_SESSIONS_COLLECTION
+```
 
-### MongoDB Deployment
+The frontend supports:
 
-Use MongoDB Atlas (cloud) or self-hosted:
+```text
+NEXT_PUBLIC_API_BASE
+```
 
-- Ensure TTL index on `sessions` collection expires old sessions
-- Create unique index on `users.email` and `sessions.token`
-- Consider backup strategy
-- Keep enough disk space for task growth
+## Common Rules
 
-## Performance Notes
+### Do
 
-### Bottlenecks to Watch
+- edit `ApiRequest.py` for business behavior
+- edit `Object.py` for data shape and validation
+- edit `AppCreator.py` for generated Flask behavior
+- regenerate `app.py` after route/signature changes
+- treat tests as route-contract protection
 
-- **Fetching tasks**: Currently loads entire task store in one query. Fine for <10k tasks per user.
-- **Updating tasks**: Writes entire store. Acceptable for todo apps; consider pagination if store grows large.
-- **MongoDB indexes**: Properly indexed on ownerId + createdAt for task queries
-- **Frontend re-renders**: React batches updates; should be fast for <1000 tasks
+### Do Not
 
-### Optimization Strategies (if needed)
-
-- **Pagination**: Add `limit` and `offset` parameters to GET /api/tasks
-- **Caching**: Add ETag or Last-Modified headers to task responses
-- **Compression**: Enable gzip in Flask/Nginx
-- **Database**: Use MongoDB aggregation pipeline for complex queries
-- **Frontend**: Lazy-load task details, virtual scrolling for large lists
+- do not hand-edit `server/app.py`
+- do not put `request` or `jsonify` in `ApiRequests` methods
+- do not reintroduce manual `add_url_rule()` registration
+- do not change frontend field names without changing the backend contract too
 
 ## Architecture Summary
 
-If you remember only one thing, remember this:
+If you want the shortest accurate mental model for this codebase, use this:
 
 ```text
-AppCreator builds the app
-ApiRequest runs the app flow
-Object defines the app language
-server.py only starts the app
+Object.py defines the shapes
+ApiRequest.py defines the business actions
+AppCreator.py generates the HTTP layer
+app.py runs the server
+page.tsx consumes the API
+test_app.py protects the contract
 ```
-
-### File Responsibilities
-
-| File | Role |
-|------|------|
-| `server.py` | Bootstrap ONLY |
-| `AppCreator.py` | Flask setup ONLY |
-| `ApiRequest.py` | All business logic |
-| `Object.py` | All data shapes |
-| `client/app/page.tsx` | React component + state |
-| `tests/test_server.py` | Backend validation |
-
-### Data Flow Summary
-
-```
-Browser Request
-    ↓
-Flask (AppCreator)
-    ↓
-ApiRequests (handler)
-    ↓
-Repository (MongoAuthRepository / MongoTaskRepository)
-    ↓
-MongoDB (collections)
-    ↓
-Object (Pydantic models for validation)
-    ↓
-JSON Response → Browser
-    ↓
-React state update → render
-```
-

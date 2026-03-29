@@ -47,7 +47,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "Flask Server" /D "%SERVER_DIR%" cmd /k "set MONGODB_URI=%MONGODB_URI% && set MONGODB_DB=%MONGODB_DB% && set MONGODB_COLLECTION=%MONGODB_COLLECTION% && %PY_EXE% %PY_ARGS% -m flask --app server.py run"
+start "Flask Server" /D "%SERVER_DIR%" cmd /k "set MONGODB_URI=%MONGODB_URI% && set MONGODB_DB=%MONGODB_DB% && set MONGODB_COLLECTION=%MONGODB_COLLECTION% && %PY_EXE% %PY_ARGS% app.py"
 start "Next Client" cmd /k "cd /d ""%CLIENT_DIR%"" && npm run dev"
 
 echo Started Flask and Next.js in separate windows.

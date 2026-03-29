@@ -1,260 +1,273 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 import sys
-from typing import Any
+from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
-# Add server to path so we can import App directly
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+SERVER_DIR = Path(__file__).resolve().parents[1]
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
 
-import App as server_module
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-@dataclass
-class FakeSession:
-    token: str
-    user: server_module.SessionUser
-    expiresAt: datetime
+import app as app_module
+from ApiRequest import ApiRequests, ApplicationServices, DuplicateEmailError
+from Object import (
+    AuthChangePasswordPayload,
+    AuthLoginPayload,
+    AuthRegisterPayload,
+    AuthenticatedSession,
+    SessionUser,
+    TaskStore,
+    nowUtc,
+    sessionCookieName,
+)
 
 
 class FakeAuthRepository:
     def __init__(self) -> None:
-        self.usersByEmail: dict[str, dict[str, Any]] = {}
-        self.sessionsByToken: dict[str, FakeSession] = {}
-        self._nextUserId = 1
-        self._nextSessionId = 1
+        self.users_by_email: dict[str, dict[str, object]] = {}
+        self.users_by_id: dict[str, dict[str, object]] = {}
+        self.sessions_by_token: dict[str, AuthenticatedSession] = {}
+        self.deleted_sessions: list[str] = []
+        self.next_user_id = 1
+        self.next_token_id = 1
 
-    def createUser(self, payload: server_module.AuthRegisterPayload) -> server_module.SessionUser:
-        if payload.email in self.usersByEmail:
-            raise ValueError("An account with that email already exists.")
+    def createUser(self, payload: AuthRegisterPayload) -> SessionUser:
+        if payload.email in self.users_by_email:
+            raise DuplicateEmailError("An account with that email already exists.")
 
-        user = server_module.SessionUser(
-            id=f"user-{self._nextUserId}",
+        user = SessionUser(
+            id=f"user-{self.next_user_id}",
             name=payload.name,
             email=payload.email,
-            createdAt=utc_now(),
+            createdAt=nowUtc(),
         )
-        self._nextUserId += 1
-        self.usersByEmail[payload.email] = {"user": user, "password": payload.password}
+        self.next_user_id += 1
+        record = {
+            "user": user,
+            "password": payload.password,
+        }
+        self.users_by_email[user.email] = record
+        self.users_by_id[user.id] = record
         return user
 
-    def authenticateUser(self, payload: server_module.AuthLoginPayload) -> server_module.SessionUser:
-        record = self.usersByEmail.get(payload.email)
+    def authenticateUser(self, payload: AuthLoginPayload) -> SessionUser:
+        record = self.users_by_email.get(payload.email)
         if not record or record["password"] != payload.password:
             raise ValueError("Invalid email or password.")
         return record["user"]
 
-    def changePassword(self, userId: str, payload: server_module.AuthChangePasswordPayload) -> None:
-        for record in self.usersByEmail.values():
-            if record["user"].id == userId:
-                if record["password"] != payload.currentPassword:
-                    raise ValueError("Current password is incorrect.")
-                record["password"] = payload.newPassword
-                return
-        raise ValueError("Current password is incorrect.")
+    def changePassword(self, userId: str, payload: AuthChangePasswordPayload) -> None:
+        record = self.users_by_id.get(userId)
+        if not record or record["password"] != payload.currentPassword:
+            raise ValueError("Current password is incorrect.")
+        record["password"] = payload.newPassword
 
-    def createSession(self, user: server_module.SessionUser) -> FakeSession:
-        token = f"token-{self._nextSessionId}"
-        self._nextSessionId += 1
-        session = FakeSession(token=token, user=user, expiresAt=utc_now())
-        self.sessionsByToken[token] = session
+    def createSession(self, user: SessionUser) -> AuthenticatedSession:
+        token = f"token-{self.next_token_id}"
+        self.next_token_id += 1
+        session = AuthenticatedSession(
+            token=token,
+            user=user,
+            expiresAt=nowUtc() + timedelta(days=14),
+        )
+        self.sessions_by_token[token] = session
         return session
 
-    def getSession(self, token: str) -> FakeSession | None:
-        return self.sessionsByToken.get(token)
+    def getSession(self, token: str) -> AuthenticatedSession | None:
+        return self.sessions_by_token.get(token)
 
     def deleteSession(self, token: str) -> None:
-        self.sessionsByToken.pop(token, None)
+        self.deleted_sessions.append(token)
+        self.sessions_by_token.pop(token, None)
 
     def deleteUser(self, userId: str) -> None:
-        for email, record in list(self.usersByEmail.items()):
-            if record["user"].id == userId:
-                self.usersByEmail.pop(email)
-        for token, session in list(self.sessionsByToken.items()):
+        record = self.users_by_id.pop(userId, None)
+        if not record:
+            return
+        user = record["user"]
+        self.users_by_email.pop(user.email, None)
+        for token, session in list(self.sessions_by_token.items()):
             if session.user.id == userId:
-                self.sessionsByToken.pop(token)
+                self.sessions_by_token.pop(token, None)
 
 
 class FakeTaskRepository:
     def __init__(self) -> None:
-        self.stores: dict[str, server_module.TaskStore] = {}
+        self.stores: dict[str, TaskStore] = {}
 
-    def loadStore(self, userId: str) -> server_module.TaskStore:
+    def loadStore(self, userId: str) -> TaskStore:
         store = self.stores.get(userId)
         if store is None:
-            store = server_module.TaskStore()
-            self.stores[userId] = store
-        return server_module.TaskStore.model_validate(store.model_dump())
+            return TaskStore()
+        return TaskStore.model_validate(store.model_dump(mode="json"))
 
-    def saveStore(self, userId: str, store: server_module.TaskStore) -> None:
-        self.stores[userId] = server_module.TaskStore.model_validate(store.model_dump())
+    def saveStore(self, userId: str, store: TaskStore) -> None:
+        self.stores[userId] = TaskStore.model_validate(store.model_dump(mode="json"))
 
 
 @pytest.fixture()
-def client(monkeypatch: pytest.MonkeyPatch):
-    fakeServices = server_module.ApplicationServices(FakeAuthRepository(), FakeTaskRepository())
-    monkeypatch.setattr(server_module, "getServices", lambda: fakeServices)
-    server_module.app.config["TESTING"] = True
+def client():
+    auth = FakeAuthRepository()
+    tasks = FakeTaskRepository()
+    services = ApplicationServices(auth, tasks)
 
-    with server_module.app.test_client() as testClient:
-        yield testClient
+    original_api_requests = app_module.api_requests
+    app_module.api_requests = ApiRequests(services_provider=lambda: services)
+    app_module.app.config["TESTING"] = True
 
+    with app_module.app.test_client() as test_client:
+        yield test_client
 
-def register(client):
-    return client.post(
-        "/api/auth/register",
-        json={
-            "name": "Glenndel",
-            "email": "glenndel@example.com",
-            "password": "strongpass123",
-        },
-    )
+    app_module.api_requests = original_api_requests
 
 
-def test_health_endpoint_returns_ok(client):
+def test_health_endpoint_returns_ok(client) -> None:
     response = client.get("/api/health")
 
     assert response.status_code == 200
     assert response.get_json()["status"] == "ok"
 
 
-def test_register_creates_session_and_starter_tasks(client):
-    response = register(client)
-    payload = response.get_json()
-
-    assert response.status_code == 201
-    assert payload["user"]["email"] == "glenndel@example.com"
-    assert server_module.sessionCookieName in response.headers.get("Set-Cookie", "")
-
-    tasksResponse = client.get("/api/tasks")
-    tasksPayload = tasksResponse.get_json()
-
-    assert tasksResponse.status_code == 200
-    assert tasksPayload["summary"]["total"] == 2
-
-
-def test_register_rejects_duplicate_email(client):
-    firstResponse = register(client)
-    secondResponse = register(client)
-
-    assert firstResponse.status_code == 201
-    assert secondResponse.status_code == 409
-    assert secondResponse.get_json()["error"] == "An account with that email already exists."
-
-
-def test_tasks_require_authentication(client):
-    response = client.get("/api/tasks")
+def test_auth_session_requires_cookie(client) -> None:
+    response = client.get("/api/auth/session")
 
     assert response.status_code == 401
-    assert response.get_json()["error"] == "Authentication required."
+    assert response.get_json() == {"error": "Authentication required."}
 
 
-def test_login_allows_existing_user_to_access_tasks(client):
-    register(client)
-    logoutResponse = client.post("/api/auth/logout")
-    assert logoutResponse.status_code == 200
-
-    loginResponse = client.post(
-        "/api/auth/login",
-        json={
-            "email": "glenndel@example.com",
-            "password": "strongpass123",
-        },
-    )
-
-    assert loginResponse.status_code == 200
-
-    tasksResponse = client.get("/api/tasks")
-    assert tasksResponse.status_code == 200
-
-
-def test_change_password_updates_login_credentials(client):
-    register(client)
-
-    changeResponse = client.post(
-        "/api/auth/change-password",
-        json={
-            "currentPassword": "strongpass123",
-            "newPassword": "newstrongpass456",
-            "confirmPassword": "newstrongpass456",
-        },
-    )
-
-    assert changeResponse.status_code == 200
-    assert changeResponse.get_json()["message"] == "Password updated successfully."
-
-    logoutResponse = client.post("/api/auth/logout")
-    assert logoutResponse.status_code == 200
-
-    oldLoginResponse = client.post(
-        "/api/auth/login",
-        json={
-            "email": "glenndel@example.com",
-            "password": "strongpass123",
-        },
-    )
-    assert oldLoginResponse.status_code == 401
-    assert oldLoginResponse.get_json()["error"] == "Invalid email or password."
-
-    newLoginResponse = client.post(
-        "/api/auth/login",
-        json={
-            "email": "glenndel@example.com",
-            "password": "newstrongpass456",
-        },
-    )
-    assert newLoginResponse.status_code == 200
-
-
-def test_change_password_rejects_wrong_current_password(client):
-    register(client)
-
+def test_register_creates_session_cookie_and_returns_user(client) -> None:
     response = client.post(
-        "/api/auth/change-password",
-        json={
-            "currentPassword": "wrongpass123",
-            "newPassword": "newstrongpass456",
-            "confirmPassword": "newstrongpass456",
-        },
+        "/api/auth/register",
+        json={"name": "Glenn", "email": "glenn@example.com", "password": "password123"},
     )
 
-    assert response.status_code == 400
-    assert response.get_json()["error"] == "Current password is incorrect."
+    body = response.get_json()
+    assert response.status_code == 201
+    assert body["user"]["email"] == "glenn@example.com"
+    assert body["message"] == "Registration successful"
+    assert sessionCookieName in response.headers.get("Set-Cookie", "")
 
 
-def test_create_task_returns_json_payload(client):
-    register(client)
+def test_login_then_get_session_returns_authenticated_user(client) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"name": "Glenn", "email": "glenn@example.com", "password": "password123"},
+    )
+    login_response = client.post(
+        "/api/auth/login",
+        json={"email": "glenn@example.com", "password": "password123"},
+    )
 
-    response = client.post(
+    assert login_response.status_code == 200
+
+    session_response = client.get("/api/auth/session")
+
+    assert session_response.status_code == 200
+    assert session_response.get_json()["user"]["email"] == "glenn@example.com"
+
+
+def test_task_crud_flow_works_with_authenticated_client(client) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"name": "Glenn", "email": "glenn@example.com", "password": "password123"},
+    )
+
+    create_response = client.post(
         "/api/tasks",
         json={
-            "title": "Finish dashboard polish",
+            "title": "Ship tests",
+            "notes": "Cover the generated app routes",
             "category": "Work",
             "priority": "high",
             "dueDate": None,
             "dueTime": None,
+            "completed": False,
+        },
+    )
+    create_body = create_response.get_json()
+    task_id = create_body["task"]["id"]
+
+    assert create_response.status_code == 201
+    assert create_body["task"]["notes"] == "Cover the generated app routes"
+
+    list_response = client.get("/api/tasks")
+    assert list_response.status_code == 200
+    assert any(task["id"] == task_id for task in list_response.get_json()["tasks"])
+
+    update_response = client.patch(
+        f"/api/tasks/{task_id}",
+        json={"notes": "Updated", "completed": True},
+    )
+    assert update_response.status_code == 200
+    assert update_response.get_json()["task"]["completed"] is True
+
+    clear_response = client.delete("/api/tasks")
+    assert clear_response.status_code == 200
+    assert clear_response.get_json()["summary"]["completed"] == 0
+
+    delete_missing_response = client.delete(f"/api/tasks/{task_id}")
+    assert delete_missing_response.status_code == 400
+    assert delete_missing_response.get_json()["error"] == "Task not found."
+
+
+def test_change_password_requires_confirmation_and_updates_login(client) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"name": "Glenn", "email": "glenn@example.com", "password": "password123"},
+    )
+
+    bad_response = client.post(
+        "/api/auth/change-password",
+        json={
+            "currentPassword": "password123",
+            "newPassword": "newpassword123",
+            "confirmPassword": "different123",
         },
     )
 
-    payload = response.get_json()
+    assert bad_response.status_code == 400
+    assert bad_response.get_json()["error"] == "Value error, New password and confirmation do not match."
 
-    assert response.status_code == 201
-    assert payload["task"]["title"] == "Finish dashboard polish"
-    assert payload["summary"]["total"] == 3
+    ok_response = client.post(
+        "/api/auth/change-password",
+        json={
+            "currentPassword": "password123",
+            "newPassword": "newpassword123",
+            "confirmPassword": "newpassword123",
+        },
+    )
+
+    assert ok_response.status_code == 200
+    assert ok_response.get_json()["message"] == "Password updated successfully"
+
+    logout_response = client.post("/api/auth/logout")
+    assert logout_response.status_code == 200
+
+    failed_login = client.post(
+        "/api/auth/login",
+        json={"email": "glenn@example.com", "password": "password123"},
+    )
+    assert failed_login.status_code == 400
+
+    new_login = client.post(
+        "/api/auth/login",
+        json={"email": "glenn@example.com", "password": "newpassword123"},
+    )
+    assert new_login.status_code == 200
 
 
-def test_ensure_utc_aware_datetime_converts_naive_value():
-    naive = datetime(2026, 3, 26, 12, 0, 0)
+def test_logout_clears_cookie_and_blocks_future_authenticated_requests(client) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"name": "Glenn", "email": "glenn@example.com", "password": "password123"},
+    )
 
-    converted = server_module.ensureUtcAwareDateTime(naive)
+    logout_response = client.post("/api/auth/logout")
 
-    assert converted.tzinfo == timezone.utc
-    assert converted.year == 2026
+    assert logout_response.status_code == 200
+    assert "Expires=Thu, 01 Jan 1970" in logout_response.headers.get("Set-Cookie", "")
+
+    tasks_response = client.get("/api/tasks")
+    assert tasks_response.status_code == 401

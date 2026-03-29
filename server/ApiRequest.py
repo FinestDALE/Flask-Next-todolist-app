@@ -8,8 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
-from flask import jsonify, request
-from pydantic import ValidationError
 from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
@@ -19,6 +17,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
+from route_config import route_config
 from Object import (
     AuthChangePasswordPayload,
     AuthLoginPayload,
@@ -43,6 +42,9 @@ from Object import (
     sessionDurationDays,
 )
 
+class DuplicateEmailError(Exception):
+    """Raised when trying to register with an email that already exists."""
+    pass
 
 class MongoDatabase:
     def __init__(self, uri: str, databaseName: str, userCollection: str, sessionCollection: str, taskCollection: str) -> None:
@@ -80,7 +82,7 @@ class MongoAuthRepository:
         try:
             self.collections.users.insert_one(document)
         except DuplicateKeyError as error:
-            raise ValueError("An account with that email already exists.") from error
+            raise DuplicateEmailError("An account with that email already exists.") from error
         return self._documentToUser(document)
 
     def authenticateUser(self, payload: AuthLoginPayload) -> SessionUser:
@@ -255,12 +257,6 @@ def responsePayload(store: TaskStore) -> dict[str, object]:
     }
 
 
-def validationErrorResponse(error: ValidationError):
-    firstError = error.errors()[0]
-    message = firstError.get("msg", "Invalid request.")
-    return jsonify({"error": message}), 400
-
-
 def createTaskRecord(payload: TaskCreate) -> Task:
     currentTime = nowUtc()
     return Task(
@@ -282,34 +278,8 @@ def sessionPayload(session: AuthenticatedSession) -> dict[str, object]:
     return {
         "user": session.user.model_dump(mode="json"),
         "expiresAt": session.expiresAt.isoformat(),
+        "token": session.token,
     }
-
-
-def buildSessionResponse(session: AuthenticatedSession, statusCode: int = 200):
-    response = jsonify(sessionPayload(session))
-    response.status_code = statusCode
-    response.set_cookie(
-        sessionCookieName,
-        session.token,
-        httponly=True,
-        samesite="Lax",
-        secure=False,
-        max_age=sessionDurationDays * 24 * 60 * 60,
-    )
-    return response
-
-
-def clearSessionCookie(response):
-    response.set_cookie(
-        sessionCookieName,
-        "",
-        httponly=True,
-        samesite="Lax",
-        secure=False,
-        expires=0,
-        max_age=0,
-    )
-    return response
 
 
 class ApiRequests:
@@ -320,154 +290,145 @@ class ApiRequests:
     def services(self) -> ApplicationServices:
         return self._services_provider()
 
-    def currentSession(self) -> AuthenticatedSession | None:
-        token = request.cookies.get(sessionCookieName, "")
-        return self.services.auth.getSession(token)
+    @route_config(httpMethod="GET", jwtRequired=False)
+    def health(self) -> dict:
+        return {"status": "ok", "time": nowIso()}
 
-    def requireSession(self):
-        session = self.currentSession()
+    @route_config(httpMethod="GET", jwtRequired=False)
+    def getSession(self, token: str = "") -> dict:
+        """Get current session from token (passed as cookie by AppCreator)."""
+        session = self.services.auth.getSession(token)
         if session is None:
-            return None, (jsonify({"error": "Authentication required."}), 401)
-        return session, None
+            raise PermissionError("Authentication required.")
+        return sessionPayload(session)
 
-    def register(self, app) -> None:
-        app.add_url_rule("/api/health", "health", self.health, methods=["GET"])
-        app.add_url_rule("/api/auth/session", "getSession", self.getSession, methods=["GET"])
-        app.add_url_rule("/api/auth/register", "register", self.registerUser, methods=["POST"])
-        app.add_url_rule("/api/auth/login", "login", self.login, methods=["POST"])
-        app.add_url_rule("/api/auth/logout", "logout", self.logout, methods=["POST"])
-        app.add_url_rule("/api/auth/change-password", "changePassword", self.changePassword, methods=["POST"])
-        app.add_url_rule("/api/tasks", "getTasks", self.getTasks, methods=["GET"])
-        app.add_url_rule("/api/tasks", "createTask", self.createTask, methods=["POST"])
-        app.add_url_rule("/api/tasks", "clearCompleted", self.clearCompleted, methods=["DELETE"])
-        app.add_url_rule("/api/tasks/<taskId>", "updateTask", self.updateTask, methods=["PATCH"])
-        app.add_url_rule("/api/tasks/<taskId>", "deleteTask", self.deleteTask, methods=["DELETE"])
-
-    def health(self):
-        return jsonify({"status": "ok", "time": nowIso()})
-
-    def getSession(self):
-        session = self.currentSession()
-        if session is None:
-            return jsonify({"user": None}), 401
-        return jsonify(sessionPayload(session))
-
-    def registerUser(self):
-        payload = request.get_json(silent=True) or {}
-        user = None
-        try:
-            registerPayload = AuthRegisterPayload.model_validate(payload)
-            user = self.services.auth.createUser(registerPayload)
-        except ValidationError as error:
-            return validationErrorResponse(error)
-        except ValueError as error:
-            return jsonify({"error": str(error)}), 409
-
+    @route_config(httpMethod="POST", jwtRequired=False, createAccessToken=True, successMessage="Registration successful")
+    def registerUser(self, name: str, email: str, password: str) -> dict:
+        """Register a new user."""
+        registerPayload = AuthRegisterPayload(name=name, email=email, password=password)
+        user = self.services.auth.createUser(registerPayload)
         try:
             saveStore(self.services, user.id, defaultStore())
             session = self.services.auth.createSession(user)
         except Exception:
-            if user is not None:
-                self.services.auth.deleteUser(user.id)
-            return jsonify({"error": "Could not finish account setup. Please try again."}), 500
+            self.services.auth.deleteUser(user.id)
+            raise Exception("Could not finish account setup. Please try again.")
+        return sessionPayload(session)
 
-        return buildSessionResponse(session, 201)
+    @route_config(httpMethod="POST", jwtRequired=False, createAccessToken=True, successMessage="Login successful")
+    def login(self, email: str, password: str) -> dict:
+        """Log in a user."""
+        loginPayload = AuthLoginPayload(email=email, password=password)
+        user = self.services.auth.authenticateUser(loginPayload)
+        session = self.services.auth.createSession(user)
+        return sessionPayload(session)
 
-    def login(self):
-        payload = request.get_json(silent=True) or {}
-        try:
-            loginPayload = AuthLoginPayload.model_validate(payload)
-            user = self.services.auth.authenticateUser(loginPayload)
-            session = self.services.auth.createSession(user)
-        except ValidationError as error:
-            return validationErrorResponse(error)
-        except ValueError as error:
-            return jsonify({"error": str(error)}), 401
-        return buildSessionResponse(session)
-
-    def logout(self):
-        token = request.cookies.get(sessionCookieName, "")
+    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Logged out successfully")
+    def logout(self, userId: str, token: str = "") -> dict:
+        """Log out the current user."""
         self.services.auth.deleteSession(token)
-        response = jsonify({"ok": True})
-        return clearSessionCookie(response)
+        return {"ok": True}
 
-    def changePassword(self):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
+    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Password updated successfully")
+    def changePassword(self, userId: str, currentPassword: str, newPassword: str, confirmPassword: str) -> dict:
+        """Change password for the current user."""
+        changePasswordPayload = AuthChangePasswordPayload(
+            currentPassword=currentPassword,
+            newPassword=newPassword,
+            confirmPassword=confirmPassword,
+        )
+        self.services.auth.changePassword(userId, changePasswordPayload)
+        return {"ok": True}
 
-        payload = request.get_json(silent=True) or {}
-        try:
-            changePasswordPayload = AuthChangePasswordPayload.model_validate(payload)
-            self.services.auth.changePassword(session.user.id, changePasswordPayload)
-        except ValidationError as error:
-            return validationErrorResponse(error)
-        except ValueError as error:
-            return jsonify({"error": str(error)}), 400
-        return jsonify({"ok": True, "message": "Password updated successfully."})
+    @route_config(httpMethod="GET", jwtRequired=True)
+    def getTasks(self, userId: str) -> dict:
+        """Get all tasks for the current user."""
+        return responsePayload(ensureStore(self.services, userId))
 
-    def getTasks(self):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
-        return jsonify(responsePayload(ensureStore(self.services, session.user.id)))
-
-    def createTask(self):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
-
-        store = ensureStore(self.services, session.user.id)
-        payload = request.get_json(silent=True) or {}
-        try:
-            newTask = createTaskRecord(TaskCreate.model_validate(payload))
-        except ValidationError as error:
-            return validationErrorResponse(error)
-
+    @route_config(httpMethod="POST", jwtRequired=True, successMessage="Task created successfully")
+    def createTask(
+        self,
+        userId: str,
+        title: str,
+        notes: str = "",
+        category: str = "",
+        priority: str = "medium",
+        dueDate: str | None = None,
+        dueTime: str | None = None,
+        completed: bool = False,
+    ) -> dict:
+        """Create a new task."""
+        store = ensureStore(self.services, userId)
+        newTask = createTaskRecord(
+            TaskCreate(
+                title=title,
+                notes=notes,
+                category=category,
+                priority=priority,
+                dueDate=dueDate,
+                dueTime=dueTime,
+                completed=completed,
+            )
+        )
         store.tasks.append(newTask)
-        saveStore(self.services, session.user.id, store)
-        return jsonify({"task": newTask.model_dump(mode="json"), **responsePayload(store)}), 201
+        saveStore(self.services, userId, store)
+        return {"task": newTask.model_dump(mode="json"), **responsePayload(store)}
 
-    def updateTask(self, taskId: str):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
-
-        store = ensureStore(self.services, session.user.id)
-        payload = request.get_json(silent=True) or {}
-        try:
-            updates = TaskUpdate.model_validate(payload)
-        except ValidationError as error:
-            return validationErrorResponse(error)
-
+    @route_config(httpMethod="PATCH", jwtRequired=True, successMessage="Task updated successfully")
+    def updateTask(
+        self,
+        userId: str,
+        taskId: str,
+        title: str | None = None,
+        notes: str | None = None,
+        category: str | None = None,
+        priority: str | None = None,
+        dueDate: str | None = None,
+        dueTime: str | None = None,
+        completed: bool | None = None,
+    ) -> dict:
+        """Update an existing task."""
+        store = ensureStore(self.services, userId)
+        updates_data = {}
+        if title is not None:
+            updates_data["title"] = title
+        if notes is not None:
+            updates_data["notes"] = notes
+        if category is not None:
+            updates_data["category"] = category
+        if priority is not None:
+            updates_data["priority"] = priority
+        if dueDate is not None:
+            updates_data["dueDate"] = dueDate
+        if dueTime is not None:
+            updates_data["dueTime"] = dueTime
+        if completed is not None:
+            updates_data["completed"] = completed
+        updates = TaskUpdate.model_validate(updates_data) if updates_data else TaskUpdate()
+        
         for index, task in enumerate(store.tasks):
             if task.id == taskId:
                 updated = applyTaskUpdates(task, updates)
                 store.tasks[index] = updated
-                saveStore(self.services, session.user.id, store)
-                return jsonify({"task": updated.model_dump(mode="json"), **responsePayload(store)})
-        return jsonify({"error": "Task not found."}), 404
+                saveStore(self.services, userId, store)
+                return {"task": updated.model_dump(mode="json"), **responsePayload(store)}
+        raise ValueError("Task not found.")
 
-    def deleteTask(self, taskId: str):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
-
-        store = ensureStore(self.services, session.user.id)
+    @route_config(httpMethod="DELETE", jwtRequired=True, successMessage="Task deleted successfully")
+    def deleteTask(self, userId: str, taskId: str) -> dict:
+        """Delete an existing task."""
+        store = ensureStore(self.services, userId)
         nextTasks = [task for task in store.tasks if task.id != taskId]
         if len(nextTasks) == len(store.tasks):
-            return jsonify({"error": "Task not found."}), 404
-
+            raise ValueError("Task not found.")
         store.tasks = nextTasks
-        saveStore(self.services, session.user.id, store)
-        return jsonify(responsePayload(store))
+        saveStore(self.services, userId, store)
+        return responsePayload(store)
 
-    def clearCompleted(self):
-        session, errorResponse = self.requireSession()
-        if errorResponse:
-            return errorResponse
-
-        store = ensureStore(self.services, session.user.id)
+    @route_config(httpMethod="DELETE", jwtRequired=True, successMessage="Completed tasks cleared successfully")
+    def clearCompleted(self, userId: str) -> dict:
+        """Clear all completed tasks."""
+        store = ensureStore(self.services, userId)
         store.tasks = [task for task in store.tasks if not task.completed]
-        saveStore(self.services, session.user.id, store)
-        return jsonify(responsePayload(store))
+        saveStore(self.services, userId, store)
+        return responsePayload(store)

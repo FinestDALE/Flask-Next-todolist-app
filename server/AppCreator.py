@@ -1,68 +1,217 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
-import sys
-
-from flask import Flask
-from flask_cors import CORS
 
 SERVER_DIR = Path(__file__).resolve().parent
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-from ApiRequest import ApiRequests
-from Object import allowedDevOrigins
 
 
 class AppCreator:
-    """Builds the Flask app and can generate the bootstrap App.py file."""
+    """Generate the Flask runtime app from ApiRequests route metadata."""
 
-    def __init__(self, apiRequests: ApiRequests) -> None:
-        self.apiRequests = apiRequests
+    ROUTE_PATHS = {
+        "health": "/api/health",
+        "getSession": "/api/auth/session",
+        "registerUser": "/api/auth/register",
+        "login": "/api/auth/login",
+        "logout": "/api/auth/logout",
+        "changePassword": "/api/auth/change-password",
+        "getTasks": "/api/tasks",
+        "createTask": "/api/tasks",
+        "updateTask": "/api/tasks/<taskId>",
+        "deleteTask": "/api/tasks/<taskId>",
+        "clearCompleted": "/api/tasks",
+    }
 
-    def create_app(self) -> Flask:
-        app = Flask(__name__)
-        app.config["JSON_SORT_KEYS"] = False
+    def __init__(self, api_requests_class=None, output_file: str | Path | None = None) -> None:
+        if api_requests_class is None:
+            from ApiRequest import ApiRequests
 
-        CORS(
-            app,
-            resources={r"/api/*": {"origins": list(allowedDevOrigins)}},
-            supports_credentials=True,
-        )
+            api_requests_class = ApiRequests
 
-        self.apiRequests.register(app)
-        return app
+        self.api_requests_class = api_requests_class
+        self.output_file = Path(output_file) if output_file else SERVER_DIR / "app.py"
 
-    def build_app_file_content(self) -> str:
-        return """from __future__ import annotations
+    def _get_route_methods(self) -> list[tuple[str, inspect.Signature, dict[str, object]]]:
+        methods: list[tuple[str, inspect.Signature, dict[str, object]]] = []
+        for name, method in inspect.getmembers(self.api_requests_class, predicate=inspect.isfunction):
+            route_details = getattr(method, "route_config", None)
+            if route_details:
+                methods.append((name, inspect.signature(method), route_details))
+        return methods
+
+    def _get_route_path(self, method_name: str) -> str:
+        return self.ROUTE_PATHS.get(method_name, f"/api/{method_name}")
+
+    @staticmethod
+    def _extract_parameters(signature: inspect.Signature) -> list[inspect.Parameter]:
+        return [parameter for name, parameter in signature.parameters.items() if name != "self"]
+
+    @staticmethod
+    def _url_parameters(route_path: str) -> list[str]:
+        parameters: list[str] = []
+        chunks = route_path.split("<")
+        for chunk in chunks[1:]:
+            parameters.append(chunk.split(">", 1)[0])
+        return parameters
+
+    @staticmethod
+    def _quote(value: object) -> str:
+        return repr(value)
+
+    def _status_code_for(self, method_name: str, http_method: str, create_token: bool) -> int:
+        if method_name in {"registerUser", "createTask"}:
+            return 201
+        if create_token and http_method == "POST":
+            return 200
+        if http_method == "POST":
+            return 200
+        return 200
+
+    def _generate_route_handler(self, method_name: str, signature: inspect.Signature, route_config: dict[str, object]) -> str:
+        http_method = str(route_config["httpMethod"])
+        jwt_required = bool(route_config.get("jwtRequired", False))
+        create_token = bool(route_config.get("createAccessToken", False))
+        success_message = route_config.get("successMessage")
+        route_path = self._get_route_path(method_name)
+        parameters = self._extract_parameters(signature)
+        url_parameters = self._url_parameters(route_path)
+        handler_name = f"handle_{method_name}"
+        status_code = self._status_code_for(method_name, http_method, create_token)
+
+        lines: list[str] = []
+        lines.append(f"@app.route({self._quote(route_path)}, methods=[{self._quote(http_method)}])")
+        handler_args = ", ".join(url_parameters)
+        lines.append(f"def {handler_name}({handler_args}):" if handler_args else f"def {handler_name}():")
+        lines.append("    payload = request.get_json(silent=True) or {}")
+        lines.append("    try:")
+        lines.append("        session = None")
+        lines.append("        token = request.cookies.get(sessionCookieName, '')")
+
+        if jwt_required:
+            lines.append("        session = api_requests.services.auth.getSession(token)")
+            lines.append("        if session is None:")
+            lines.append("            return jsonify({'error': 'Authentication required.'}), 401")
+            lines.append("        current_user = session.user.id")
+        elif any(parameter.name in {"token", "userId"} for parameter in parameters):
+            lines.append("        if token:")
+            lines.append("            session = api_requests.services.auth.getSession(token)")
+
+        if method_name == "getSession":
+            lines.append("        if session is None:")
+            lines.append("            return jsonify({'error': 'Authentication required.'}), 401")
+
+        call_arguments: list[str] = []
+        for parameter in parameters:
+            name = parameter.name
+            if name in url_parameters:
+                call_arguments.append(name)
+                continue
+            if name == "token":
+                call_arguments.append("token")
+                continue
+            if name == "userId":
+                if jwt_required:
+                    lines.append("        userId = payload.get('userId', current_user)")
+                    call_arguments.append("userId")
+                    continue
+                lines.append("        userId = payload.get('userId')")
+                call_arguments.append("userId")
+                continue
+            default = None if parameter.default is inspect._empty else parameter.default
+            if default is None:
+                lines.append(f"        {name} = payload.get({self._quote(name)})")
+            else:
+                lines.append(f"        {name} = payload.get({self._quote(name)}, {self._quote(default)})")
+            call_arguments.append(name)
+
+        if jwt_required and "userId" in [parameter.name for parameter in parameters]:
+            lines.append("        if userId != current_user:")
+            lines.append("            raise PermissionError('You do not have permission to access this resource.')")
+
+        lines.append(f"        result = api_requests.{method_name}({', '.join(call_arguments)})")
+        lines.append("        if isinstance(result, dict):")
+        lines.append("            response_data = dict(result)")
+        lines.append("        else:")
+        lines.append("            response_data = {'data': result}")
+        if success_message:
+            lines.append(f"        response_data.setdefault('message', {self._quote(success_message)})")
+        lines.append("        response = jsonify(response_data)")
+
+        if create_token:
+            lines.append("        token_value = response_data.get('token', '')")
+            lines.append("        if token_value:")
+            lines.append("            response.set_cookie(")
+            lines.append("                sessionCookieName,")
+            lines.append("                token_value,")
+            lines.append("                httponly=True,")
+            lines.append("                samesite='Lax',")
+            lines.append("                secure=False,")
+            lines.append("                max_age=30 * 24 * 60 * 60,")
+            lines.append("            )")
+
+        if method_name == "logout":
+            lines.append("        response.delete_cookie(sessionCookieName, httponly=True, samesite='Lax', secure=False)")
+
+        lines.append(f"        return response, {status_code}")
+        lines.append("    except PermissionError as error:")
+        lines.append("        return jsonify({'error': str(error)}), 403")
+        lines.append("    except ValidationError as error:")
+        lines.append("        return jsonify({'error': error.errors()[0]['msg']}), 400")
+        lines.append("    except DuplicateEmailError as error:")
+        lines.append("        return jsonify({'error': str(error)}), 409")
+        lines.append("    except ValueError as error:")
+        lines.append("        return jsonify({'error': str(error)}), 400")
+        lines.append("    except Exception as error:")
+        lines.append("        return jsonify({'error': str(error)}), 500")
+        return "\n".join(lines)
+
+    def generate_app_code(self) -> str:
+        handlers = [
+            self._generate_route_handler(method_name, signature, route_details)
+            for method_name, signature, route_details in self._get_route_methods()
+        ]
+        handler_code = "\n\n\n".join(handlers)
+        return f'''"""Generated by AppCreator. Do not edit by hand."""
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from pydantic import ValidationError
 
 SERVER_DIR = Path(__file__).resolve().parent
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from AppCreator import AppCreator
-from ApiRequest import ApiRequests, getServices
+from ApiRequest import ApiRequests, DuplicateEmailError, getServices
+from Object import allowedDevOrigins, sessionCookieName
+
+app = Flask(__name__)
+app.config["JSON_SORT_KEYS"] = False
+
+CORS(
+    app,
+    resources={{r"/api/*": {{"origins": list(allowedDevOrigins)}}}},
+    supports_credentials=True,
+)
+
+api_requests = ApiRequests(services_provider=getServices)
 
 
-def create_app():
-    return AppCreator(
-        apiRequests=ApiRequests(services_provider=lambda: getServices())
-    ).create_app()
-
-
-app = create_app()
+{handler_code}
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
-"""
+    app.run(host="0.0.0.0", port=5000, debug=True)
+'''
 
     def generate_app_file(self, output_path: str | Path | None = None) -> Path:
-        target = Path(output_path) if output_path else SERVER_DIR / "App.py"
-        target.write_text(self.build_app_file_content(), encoding="utf-8")
+        target = Path(output_path) if output_path else self.output_file
+        target.write_text(self.generate_app_code(), encoding="utf-8")
         return target
 
     def generateAPI(self, kind: str = "app") -> Path:
@@ -72,6 +221,6 @@ if __name__ == "__main__":
 
 
 if __name__ == "__main__":
-    creator = AppCreator(apiRequests=ApiRequests())
-    generated_path = creator.generate_app_file()
-    print(f"Generated {generated_path.name}")
+    creator = AppCreator()
+    generated_path = creator.generateAPI("app")
+    print(f"Generated {generated_path}")
