@@ -176,13 +176,11 @@ def handle_getSession():
         token = request.cookies.get(sessionCookieName, '')
         if token:
             session = api_requests.services.auth.getSession(token)
-        if session is None:
-            return json_error('Authentication required.', 401)
         result = api_requests.getSession(token)
         response = build_api_response(result, success_message=None)
         return response, 200
     except PermissionError as error:
-        return json_error(str(error), 403)
+        return json_error(str(error), 401)
     except ValidationError as error:
         return json_error(error.errors()[0]['msg'], 400)
     except DuplicateEmailError as error:

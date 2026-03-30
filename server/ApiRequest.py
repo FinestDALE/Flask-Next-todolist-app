@@ -294,7 +294,12 @@ class ApiRequests:
     def health(self) -> dict:
         return {"status": "ok", "time": nowIso()}
 
-    @route_config(httpMethod="GET", authRequired=False, routePath="/api/auth/session")
+    @route_config(
+        httpMethod="GET",
+        authRequired=False,
+        permissionErrorStatusCode=401,
+        routePath="/api/auth/session",
+    )
     def getSession(self, token: str = "") -> dict:
         """Get current session from token (passed as cookie by AppCreator)."""
         session = self.services.auth.getSession(token)
@@ -306,6 +311,7 @@ class ApiRequests:
         httpMethod="POST",
         authRequired=False,
         createAccessToken=True,
+        statusCode=201,
         successMessage="Registration successful",
         routePath="/api/auth/register",
     )
@@ -338,6 +344,7 @@ class ApiRequests:
     @route_config(
         httpMethod="POST",
         authRequired=True,
+        deleteCookie=True,
         successMessage="Logged out successfully",
         routePath="/api/auth/logout",
     )
@@ -370,6 +377,7 @@ class ApiRequests:
     @route_config(
         httpMethod="POST",
         authRequired=True,
+        statusCode=201,
         successMessage="Task created successfully",
         routePath="/api/tasks",
     )

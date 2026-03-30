@@ -48,25 +48,18 @@ class AppCreator:
     def _quote(value: object) -> str:
         return repr(value)
 
-    def _status_code_for(self, method_name: str, http_method: str, create_token: bool) -> int:
-        if method_name in {"registerUser", "createTask"}:
-            return 201
-        if create_token and http_method == "POST":
-            return 200
-        if http_method == "POST":
-            return 200
-        return 200
-
     def _generate_route_handler(self, method_name: str, signature: inspect.Signature, route_config: dict[str, object]) -> str:
         http_method = str(route_config["httpMethod"])
         auth_required = bool(route_config.get("authRequired", route_config.get("jwtRequired", False)))
         create_token = bool(route_config.get("createAccessToken", False))
+        delete_cookie = bool(route_config.get("deleteCookie", False))
+        permission_error_status_code = int(route_config.get("permissionErrorStatusCode", 403))
         success_message = route_config.get("successMessage")
         route_path = self._get_route_path(method_name, route_config)
         parameters = self._extract_parameters(signature)
         url_parameters = self._url_parameters(route_path)
         handler_name = f"handle_{method_name}"
-        status_code = self._status_code_for(method_name, http_method, create_token)
+        status_code = int(route_config.get("statusCode", 200))
 
         lines: list[str] = []
         lines.append(f"@app.route({self._quote(route_path)}, methods=[{self._quote(http_method)}])")
@@ -85,10 +78,6 @@ class AppCreator:
         elif any(parameter.name in {"token", "userId"} for parameter in parameters):
             lines.append("        if token:")
             lines.append("            session = api_requests.services.auth.getSession(token)")
-
-        if method_name == "getSession":
-            lines.append("        if session is None:")
-            lines.append("            return json_error('Authentication required.', 401)")
 
         call_arguments: list[str] = []
         for parameter in parameters:
@@ -134,12 +123,12 @@ class AppCreator:
             lines.append("                max_age=30 * 24 * 60 * 60,")
             lines.append("            )")
 
-        if method_name == "logout":
+        if delete_cookie:
             lines.append("        response.delete_cookie(sessionCookieName, httponly=True, samesite='Lax', secure=False)")
 
         lines.append(f"        return response, {status_code}")
         lines.append("    except PermissionError as error:")
-        lines.append("        return json_error(str(error), 403)")
+        lines.append(f"        return json_error(str(error), {permission_error_status_code})")
         lines.append("    except ValidationError as error:")
         lines.append("        return json_error(error.errors()[0]['msg'], 400)")
         lines.append("    except DuplicateEmailError as error:")
