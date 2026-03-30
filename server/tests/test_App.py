@@ -12,6 +12,7 @@ if str(SERVER_DIR) not in sys.path:
 
 import app as app_module
 from ApiRequest import ApiRequests, ApplicationServices, DuplicateEmailError
+from AppCreator import AppCreator
 from Object import (
     AuthChangePasswordPayload,
     AuthLoginPayload,
@@ -271,3 +272,49 @@ def test_logout_clears_cookie_and_blocks_future_authenticated_requests(client) -
 
     tasks_response = client.get("/api/tasks")
     assert tasks_response.status_code == 401
+
+
+def test_app_creator_rejects_invalid_http_method() -> None:
+    class InvalidApiRequests:
+        def badRoute(self) -> dict:
+            return {"ok": True}
+
+    InvalidApiRequests.badRoute.route_config = {
+        "httpMethod": "TRACE",
+        "authRequired": False,
+        "jwtRequired": False,
+        "createAccessToken": False,
+        "statusCode": 200,
+        "deleteCookie": False,
+        "permissionErrorStatusCode": 403,
+        "successMessage": None,
+        "routePath": "/api/bad-route",
+    }
+
+    creator = AppCreator(api_requests_class=InvalidApiRequests)
+
+    with pytest.raises(ValueError, match="Invalid HTTP method"):
+        creator.generate_app_code()
+
+
+def test_app_creator_rejects_conflicting_auth_and_token_flags() -> None:
+    class InvalidApiRequests:
+        def badRoute(self) -> dict:
+            return {"ok": True}
+
+    InvalidApiRequests.badRoute.route_config = {
+        "httpMethod": "POST",
+        "authRequired": True,
+        "jwtRequired": True,
+        "createAccessToken": True,
+        "statusCode": 200,
+        "deleteCookie": False,
+        "permissionErrorStatusCode": 403,
+        "successMessage": None,
+        "routePath": "/api/bad-route",
+    }
+
+    creator = AppCreator(api_requests_class=InvalidApiRequests)
+
+    with pytest.raises(ValueError, match="createAccessToken cannot be combined with authRequired"):
+        creator.generate_app_code()

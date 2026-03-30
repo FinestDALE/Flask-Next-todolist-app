@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent
+VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
 
 
 class AppCreator:
@@ -23,8 +24,41 @@ class AppCreator:
         for name, method in inspect.getmembers(self.api_requests_class, predicate=inspect.isfunction):
             route_details = getattr(method, "route_config", None)
             if route_details:
+                self._validate_route_config(name, route_details)
                 methods.append((name, inspect.signature(method), route_details))
         return methods
+
+    def _validate_route_config(self, method_name: str, route_config: dict[str, object]) -> None:
+        http_method = str(route_config.get("httpMethod", "")).strip().upper()
+        if http_method not in VALID_HTTP_METHODS:
+            raise ValueError(
+                f"Invalid HTTP method for {method_name}: {http_method or '<missing>'}. "
+                f"Expected one of {sorted(VALID_HTTP_METHODS)}."
+            )
+
+        auth_required = bool(route_config.get("authRequired", route_config.get("jwtRequired", False)))
+        create_token = bool(route_config.get("createAccessToken", False))
+        if auth_required and create_token:
+            raise ValueError(
+                f"Invalid route config for {method_name}: createAccessToken cannot be combined with authRequired."
+            )
+
+        route_path = route_config.get("routePath")
+        if route_path is not None:
+            if not isinstance(route_path, str) or not route_path.strip():
+                raise ValueError(f"Invalid route config for {method_name}: routePath must be a non-empty string.")
+            if not route_path.startswith("/"):
+                raise ValueError(f"Invalid route config for {method_name}: routePath must start with '/'.")
+
+        status_code = route_config.get("statusCode", 200)
+        if not isinstance(status_code, int) or not 100 <= status_code <= 599:
+            raise ValueError(f"Invalid route config for {method_name}: statusCode must be an integer between 100 and 599.")
+
+        permission_error_status_code = route_config.get("permissionErrorStatusCode", 403)
+        if not isinstance(permission_error_status_code, int) or not 100 <= permission_error_status_code <= 599:
+            raise ValueError(
+                f"Invalid route config for {method_name}: permissionErrorStatusCode must be an integer between 100 and 599."
+            )
 
     def _get_route_path(self, method_name: str, route_config: dict[str, object]) -> str:
         route_path = route_config.get("routePath")
